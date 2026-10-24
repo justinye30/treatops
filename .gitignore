@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# API keys live here; copy laptop/.env.example to start one
+.env
+
+# Downloaded on first run by laptop/hand_in_bowl.py
+laptop/hand_landmarker.task
+
+# Bowl position depends on where the camera sits; redraw it per setup
+laptop/bowl_region.json

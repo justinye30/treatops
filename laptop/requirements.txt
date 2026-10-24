@@ -1,0 +1,5 @@
+# mediapipe pulls in opencv-contrib-python, which provides cv2.
+# Don't also install opencv-python: the two packages clash.
+mediapipe
+openai
+python-dotenv
