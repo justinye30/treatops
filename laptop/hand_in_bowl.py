@@ -44,7 +44,7 @@ import box_tracker
 from box_tracker import BoxTracker
 from candy_counter import PIECES, changed_fraction, count_taken, crop_to_hands, sharpness
 from dashboard import Dashboard
-from plushie import Plushie
+from plushie import Plushie, wav_seconds
 from roaster import Roaster
 
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX") or 1)  # Iriun phone camera, found with find_camera.py
@@ -367,8 +367,12 @@ def main():
 
             # The dashboard's buttons.
             for action, value in dashboard.controls():
-                print(f"[{now - start:7.1f}s] DASHBOARD {action} {value if value is not None else ''}")
-                if action == "scare":
+                shown = f"{len(value)} bytes" if isinstance(value, bytes) else ("" if value is None else value)
+                print(f"[{now - start:7.1f}s] DASHBOARD {action} {shown}")
+                if action == "say":  # the operator talking through the dashboard's mic
+                    roaster.say_recording(value)
+                    dashboard.log(f"Operator on the speaker ({wav_seconds(value):.1f}s)")
+                elif action == "scare":
                     show.force_scare(frame, now)
                 elif action == "roast":  # roast whoever's in front of the camera, right now
                     roaster.roast(roaster.prepare(frame), wait=12.0,

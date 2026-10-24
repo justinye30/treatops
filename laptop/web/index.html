@@ -119,6 +119,14 @@
   .scare:hover { background: #f6cc55; border-color: #f6cc55; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .pair button { min-height: 46px; }
+  .talk { display: grid; gap: 6px; }
+  .talk-button { position: relative; overflow: hidden; width: 100%; min-height: 48px; display: flex; align-items: center; justify-content: center;
+    user-select: none; -webkit-user-select: none; touch-action: none; }
+  .talk-button.live { border-color: var(--corn-yellow); color: var(--corn-yellow); background: color-mix(in srgb, var(--corn-yellow) 10%, var(--asphalt-raised)); }
+  .talk-button .level { position: absolute; left: 0; bottom: 0; height: 4px; width: 0; background: var(--corn-yellow); }
+  .talk-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: 13px; color: var(--chalk-dim); }
+  .check { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; color: var(--chalk); }
+  .check input { accent-color: var(--corn-yellow); width: 16px; height: 16px; margin: 0; }
   .setting { display: grid; grid-template-columns: 56px minmax(0, 1fr); align-items: center; gap: 10px; }
   .setting > span { color: var(--chalk-dim); font-size: 13px; }
   .switch { display: flex; flex-wrap: wrap; justify-self: start; border: 1px solid var(--edge); border-radius: 3px; overflow: hidden; }
@@ -235,6 +243,13 @@
         <button data-action="roast">Roast this costume<kbd>R</kbd></button>
         <button data-action="end_visitor">Release visitor<kbd>X</kbd></button>
       </div>
+      <div class="talk">
+        <button class="talk-button" id="talk" aria-describedby="talk-note"><span id="talk-text">Hold to talk</span><kbd>T</kbd><i class="level" id="talk-level"></i></button>
+        <div class="talk-row">
+          <label class="check"><input type="checkbox" id="deep"> Deep voice</label>
+          <span id="talk-note" aria-live="polite">Talk through the plushie: hold, speak, let go.</span>
+        </div>
+      </div>
       <div class="setting"><span id="lid-label">Lid</span>
         <div class="switch" role="radiogroup" aria-labelledby="lid-label" id="lid">
           <button role="radio" data-action="lid" data-value="false" aria-checked="false">Open</button>
@@ -317,17 +332,119 @@ $('reset').addEventListener('click', () => {
   if (confirm('Reset Top Big Backs? This deletes their photos and the replays of every catch.')) control('clear_board');
 });
 
-// Keys for the operator: Space scare, R roast, X release, L lid, M mute.
+// Keys for the operator: Space scare, R roast, X release, L lid, M mute, T (held) talk.
 document.addEventListener('keydown', (event) => {
-  if ($('player').open || event.ctrlKey || event.metaKey || event.altKey) return;
+  if ($('player').open || event.ctrlKey || event.metaKey || event.altKey || event.target.matches('input')) return;
   if ((event.key === ' ' || event.key === 'Enter') && event.target.closest('button')) return;  // the button does it
   const key = event.key.toLowerCase();
-  if (key === ' ') { event.preventDefault(); control('scare'); }
+  if (key === 't') { event.preventDefault(); if (!event.repeat) micStart(); }
+  else if (key === ' ') { event.preventDefault(); control('scare'); }
   else if (key === 'r') control('roast');
   else if (key === 'x') control('end_visitor');
   else if (key === 'l') control('lid', !status.lid_closed);
   else if (key === 'm') control('mute', !status.muted);
 });
+
+document.addEventListener('keyup', (event) => { if (event.key.toLowerCase() === 't') micStop(); });
+
+// ---------- Push to talk: the browser's mic, recorded while held, played through the plushie ----------
+// Recorded as 16 kHz 16-bit WAV (no libraries), sent to POST /api/say. "Deep voice" labels it as a lower
+// sample rate, so it plays slower and deeper. Browsers only allow the mic on a secure page, which
+// http://localhost counts as; from another device over plain http it's refused.
+
+const MIC_RATE = 16000;
+const MAX_TALK_SECONDS = 30;
+const mic = { stream: null, ctx: null, chunks: [], started: 0, active: false, held: false, timer: 0 };
+const talkNote = (text) => { $('talk-note').textContent = text; };
+
+async function micStart() {
+  mic.held = true;  // let go before the mic is ready (the first time, while the browser asks) and it doesn't start
+  if (mic.active) return;
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    talkNote('The mic only works with the dashboard open on this laptop, at http://localhost:8080.');
+    return;
+  }
+  try {
+    if (!mic.stream) {
+      mic.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      mic.ctx = new AudioContext();
+      const tap = 'class Tap extends AudioWorkletProcessor { process(inputs) { const ch = inputs[0][0]; if (ch) this.port.postMessage(ch.slice(0)); return true; } } registerProcessor("tap", Tap);';
+      await mic.ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([tap], { type: 'application/javascript' })));
+      const node = new AudioWorkletNode(mic.ctx, 'tap');
+      node.port.onmessage = (event) => { if (mic.active) { mic.chunks.push(event.data); meter(event.data); } };
+      const silent = mic.ctx.createGain();
+      silent.gain.value = 0;  // keeps the tap running without playing the mic back
+      mic.ctx.createMediaStreamSource(mic.stream).connect(node).connect(silent).connect(mic.ctx.destination);
+    }
+    await mic.ctx.resume();
+    if (!mic.held) { talkNote('Mic ready. Hold the button (or T) and talk.'); return; }
+    mic.chunks = [];
+    mic.started = performance.now();
+    mic.active = true;
+    $('talk').classList.add('live');
+    mic.timer = setInterval(() => {
+      const seconds = (performance.now() - mic.started) / 1000;
+      $('talk-text').textContent = `Recording ${seconds.toFixed(1)}s · let go to send`;
+      if (seconds >= MAX_TALK_SECONDS) micStop();
+    }, 100);
+  } catch (error) {
+    talkNote(error.name === 'NotAllowedError' ? 'The mic is blocked. Allow it from the address bar, then try again.' : `The mic didn't start: ${error.message}`);
+  }
+}
+
+async function micStop() {
+  mic.held = false;
+  if (!mic.active) return;
+  mic.active = false;
+  clearInterval(mic.timer);
+  $('talk').classList.remove('live');
+  $('talk-text').textContent = 'Hold to talk';
+  $('talk-level').style.width = '0';
+  const seconds = (performance.now() - mic.started) / 1000;
+  if (seconds < 0.4) { talkNote('Hold the button (or T) for as long as you talk.'); return; }
+  const wav = encodeWav(resample(mic.chunks, mic.ctx.sampleRate, MIC_RATE), $('deep').checked ? Math.round(MIC_RATE * 0.78) : MIC_RATE);
+  if (DEMO !== null) { talkNote(`Demo: ${seconds.toFixed(1)}s recorded; with TreatOps running it plays on the speaker.`); return; }
+  try {
+    const response = await fetch('/api/say', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
+    talkNote(response.ok ? `Sent ${seconds.toFixed(1)}s to the speaker.` : `It didn't send (error ${response.status}).`);
+  } catch {
+    talkNote("It didn't send: TreatOps isn't reachable.");
+  }
+}
+
+function meter(samples) {
+  let sum = 0;
+  for (const s of samples) sum += s * s;
+  $('talk-level').style.width = `${Math.min(100, Math.sqrt(sum / samples.length) * 400)}%`;
+}
+
+// The mic's own rate (usually 48 kHz) down to MIC_RATE, by linear interpolation.
+function resample(chunks, from, to) {
+  const input = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) { input.set(c, at); at += c.length; }
+  const output = new Float32Array(Math.floor((input.length * to) / from));
+  for (let i = 0; i < output.length; i++) {
+    const x = (i * from) / to, i0 = Math.floor(x), i1 = Math.min(i0 + 1, input.length - 1);
+    output[i] = input[i0] + (input[i1] - input[i0]) * (x - i0);
+  }
+  return output;
+}
+
+function encodeWav(samples, rate) {
+  const view = new DataView(new ArrayBuffer(44 + samples.length * 2));
+  const text = (offset, s) => [...s].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
+  text(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); text(8, 'WAVE');
+  text(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  text(36, 'data'); view.setUint32(40, samples.length * 2, true);
+  samples.forEach((s, i) => view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s)) * 0x7fff, true));
+  return new Blob([view.buffer], { type: 'audio/wav' });
+}
+
+$('talk').addEventListener('pointerdown', (event) => { $('talk').setPointerCapture(event.pointerId); micStart(); });
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach((type) => $('talk').addEventListener(type, micStop));
+$('talk').addEventListener('contextmenu', (event) => event.preventDefault());  // a long press on a phone
 
 // Four polls a second while something's happening (the hand's timer, a catch), one a second otherwise.
 async function poll() {

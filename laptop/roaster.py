@@ -178,6 +178,10 @@ class Roaster:
         # Off the caller's thread: an uncached line means a call to ElevenLabs, and that mustn't stall the video.
         threading.Thread(target=lambda: self._lines.put(self._canned(random.choice(WARNINGS))), daemon=True).start()
 
+    def say_recording(self, wav):
+        """The operator talking through the dashboard's mic: played in turn with the lines, even when muted."""
+        self._lines.put(("Operator on the speaker", wav, "wav"))
+
     def _canned(self, text):
         """A canned line with its audio from voice_cache/, synthesised the first time it's needed."""
         if not self.can_speak:
@@ -198,12 +202,15 @@ class Roaster:
 
     def _speaker(self):
         while True:
-            text, mp3 = self._lines.get()
-            print(f"  PLUSHIE SAYS: {text}" + ("  (muted)" if self.muted else ""))
+            # (text, mp3) for the lines; (text, wav, "wav") for the operator's mic, which plays even when muted.
+            text, audio, *kind = self._lines.get()
+            kind = kind[0] if kind else "mp3"
+            muted = self.muted and kind == "mp3"
+            print(f"  PLUSHIE SAYS: {text}" + ("  (muted)" if muted else ""))
             self.speaking = text
             try:
-                if mp3 and not self.muted:
-                    self.plushie.say(mp3)
+                if audio and not muted:
+                    self.plushie.say(audio, kind)
                 else:
                     time.sleep(3)  # long enough to read the subtitle
             except Exception as error:

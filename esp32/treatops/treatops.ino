@@ -12,6 +12,7 @@
 
   The voice comes from the laptop over Wi-Fi (laptop/plushie.py). It asks:
     GET /play?file=<name>&port=<port>   stream http://<the laptop that asked>:<port>/<name> and play it
+                                        (.mp3: a spoken line; .wav: the operator talking from the dashboard)
     GET /stop                           stop talking
     GET /cmd?c=<command>                EYES CALM|SUSPICIOUS|PLEASED|ANGRY (or GREEN|YELLOW|RED)
                                         LOOK x y       look that way, -1..1 each (the hand), for a while
@@ -37,6 +38,7 @@
 #include "AudioFileSourceBuffer.h"
 #include "AudioFileSourceHTTPStream.h"
 #include "AudioGeneratorMP3.h"
+#include "AudioGeneratorWAV.h"
 #include "AudioOutputInternalDAC.h"
 #include "secrets.h"  // WIFI_SSID, WIFI_PASSWORD
 
@@ -112,7 +114,7 @@ WebServer server(80);
 MeteredDAC* audioOut = nullptr;
 AudioFileSourceHTTPStream* stream = nullptr;
 AudioFileSourceBuffer* buffered = nullptr;
-AudioGeneratorMP3* decoder = nullptr;
+AudioGenerator* decoder = nullptr;  // MP3 for the spoken lines, WAV for the operator's mic
 
 // Frees the line being played. `started`: the decoder got going, so it has an output to stop.
 void releasePlayback(bool started) {
@@ -135,7 +137,11 @@ bool startPlayback(const String& url) {
   stopPlayback();  // a new line cuts off the old one
   stream = new AudioFileSourceHTTPStream(url.c_str());
   buffered = new AudioFileSourceBuffer(stream, STREAM_BUFFER);
-  decoder = new AudioGeneratorMP3();
+  if (url.endsWith(".wav")) {
+    decoder = new AudioGeneratorWAV();
+  } else {
+    decoder = new AudioGeneratorMP3();
+  }
   if (decoder->begin(buffered, audioOut)) return true;
   Serial.println("ERROR: couldn't stream the line (laptop firewall? different network?)");
   releasePlayback(false);

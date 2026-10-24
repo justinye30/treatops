@@ -7,7 +7,8 @@ hand_in_bowl.py starts it and feeds it; open http://localhost:8080 (DASHBOARD_PO
 from this laptop unless DASHBOARD_HOST=0.0.0.0: it shows photos of trick-or-treaters, so open it up only on
 a network you trust. Everything it keeps is in laptop/data/ (gitignored): delete it after the event.
 
-Standard library only: an MJPEG stream for the camera, JSON for the rest, polled by web/index.html.
+Standard library only: an MJPEG stream for the camera, JSON for the rest, polled by web/index.html. The
+page's push-to-talk sends WAV to POST /api/say, and the plushie plays it.
 """
 import collections
 import http.server
@@ -36,6 +37,7 @@ REPLAY_BEFORE = 2.0  # seconds of camera from before the scare
 REPLAY_AFTER = 6.0   # ...and after
 PHOTO_WIDTH = 480
 EVENTS = 40
+MAX_RECORDING_BYTES = 2_000_000  # about a minute of the mic at 16 kHz
 
 # What the buttons can ask for; hand_in_bowl.py carries them out on its own thread.
 ACTIONS = {"scare", "roast", "end_visitor", "lid", "eyes", "mute", "clear_board"}
@@ -223,6 +225,9 @@ class Dashboard:
                     self.send_error(404)
 
             def do_POST(self):
+                if self.path == "/api/say":
+                    self._say()
+                    return
                 if self.path != "/api/control":
                     self.send_error(404)
                     return
@@ -236,6 +241,19 @@ class Dashboard:
                     self.send_error(400)
                     return
                 dashboard._controls.put((action, value))
+                self._json({"ok": True})
+
+            def _say(self):
+                """A recording from the dashboard's mic (16-bit WAV), for the plushie to play."""
+                length = int(self.headers.get("Content-Length") or 0)
+                if not 44 < length <= MAX_RECORDING_BYTES:
+                    self.send_error(413 if length > MAX_RECORDING_BYTES else 400)
+                    return
+                wav = self.rfile.read(length)
+                if wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
+                    self.send_error(415)
+                    return
+                dashboard._controls.put(("say", wav))
                 self._json({"ok": True})
 
             def _json(self, data):

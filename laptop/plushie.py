@@ -1,8 +1,9 @@
 """
 The plushie: an ESP32 with a speaker, on the same Wi-Fi as this laptop.
 
-The laptop does the thinking (OpenAI, ElevenLabs) and the plushie does the talking. say(mp3) keeps the clip
-in a small web server here and asks the ESP32 to stream it and play it (esp32/treatops). Commands such as
+The laptop does the thinking (OpenAI, ElevenLabs) and the plushie does the talking. say(audio) keeps the clip
+(an MP3 line, or WAV from the dashboard's mic) in a small web server here and asks the ESP32 to stream it and
+play it (esp32/treatops). Commands such as
 LID CLOSE go to the ESP32 the same way:
 
   LID OPEN | LID CLOSE                   the cardboard lid
@@ -38,7 +39,7 @@ class Plushie:
         self.host = host or None
         self.mood = "CALM"        # what it was last told, for the dashboard
         self.lid_closed = False
-        self._clips = OrderedDict()  # name -> MP3 bytes, served to the ESP32
+        self._clips = OrderedDict()  # name -> audio bytes (MP3 lines, WAV from the dashboard's mic), served to the ESP32
         self._names = itertools.count()
         self._commands = queue.Queue()
         # Commands go out on their own thread: a slow or missing ESP32 must never stall the video.
@@ -49,12 +50,15 @@ class Plushie:
         else:
             print("PLUSHIE_HOST not set (see laptop/.env): voice on this laptop, commands printed only.")
 
-    def say(self, mp3):
-        """Plays an MP3 clip through the plushie (or this laptop) and returns about when it's done."""
-        seconds = len(mp3) / MP3_BYTES_PER_SECOND
+    def say(self, audio, kind="mp3"):
+        """
+        Plays a clip through the plushie (or this laptop) and returns about when it's done. `kind` is "mp3"
+        (the spoken lines) or "wav" (the dashboard's mic).
+        """
+        seconds = wav_seconds(audio) if kind == "wav" else len(audio) / MP3_BYTES_PER_SECOND
         if self.host:
-            name = f"line-{next(self._names)}.mp3"
-            self._clips[name] = mp3
+            name = f"line-{next(self._names)}.{kind}"
+            self._clips[name] = audio
             while len(self._clips) > KEEP_CLIPS:
                 self._clips.popitem(last=False)
             try:
@@ -64,7 +68,7 @@ class Plushie:
                 return
             except Exception as error:
                 print(f"  plushie couldn't play it ({error}); playing on the laptop instead")
-        play_locally(mp3)
+        play_locally(audio, kind)
 
     def command(self, text):
         print(f"  -> plushie: {text}")
@@ -108,15 +112,16 @@ class Plushie:
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                mp3 = clips.get(self.path.lstrip("/"))
-                if mp3 is None:
+                name = self.path.lstrip("/")
+                audio = clips.get(name)
+                if audio is None:
                     self.send_error(404)
                     return
                 self.send_response(200)
-                self.send_header("Content-Type", "audio/mpeg")
-                self.send_header("Content-Length", str(len(mp3)))
+                self.send_header("Content-Type", "audio/wav" if name.endswith(".wav") else "audio/mpeg")
+                self.send_header("Content-Length", str(len(audio)))
                 self.end_headers()
-                self.wfile.write(mp3)
+                self.wfile.write(audio)
 
             def log_message(self, *args):
                 pass  # quiet
@@ -125,14 +130,21 @@ class Plushie:
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
-def play_locally(mp3):
-    """Plays MP3 bytes on this computer's speakers and returns when it's done."""
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as file:
-        file.write(mp3)
+def wav_seconds(wav):
+    """How long a 16-bit WAV plays, from its header (its sample rate and channels)."""
+    channels = int.from_bytes(wav[22:24], "little") or 1
+    rate = int.from_bytes(wav[24:28], "little") or 16000
+    return max(0, len(wav) - 44) / (rate * channels * 2)
+
+
+def play_locally(audio, kind="mp3"):
+    """Plays MP3 or WAV bytes on this computer's speakers and returns when it's done."""
+    with tempfile.NamedTemporaryFile(suffix=f".{kind}", delete=False) as file:
+        file.write(audio)
     try:
         system = platform.system()
         if system == "Windows":
-            # Windows' built-in media player API: plays MP3 without installing anything.
+            # Windows' built-in media player API: plays MP3 and WAV without installing anything.
             mci = ctypes.windll.winmm.mciSendStringW
             alias = f"clip{threading.get_ident()}"
             mci(f'open "{file.name}" type mpegvideo alias {alias}', None, 0, None)
@@ -141,6 +153,6 @@ def play_locally(mp3):
         elif system == "Darwin":
             subprocess.run(["afplay", file.name], check=False)
         else:
-            subprocess.run(["mpg123", "-q", file.name], check=False)
+            subprocess.run(["aplay" if kind == "wav" else "mpg123", "-q", file.name], check=False)
     finally:
         os.unlink(file.name)
