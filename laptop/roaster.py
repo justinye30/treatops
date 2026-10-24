@@ -19,6 +19,7 @@ import queue
 import random
 import sys
 import threading
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -124,6 +125,7 @@ class Roaster:
         self.can_roast = bool(os.environ.get("OPENAI_API_KEY"))
         self.can_speak = bool(os.environ.get("ELEVENLABS_API_KEY"))
         self.muted = False  # the dashboard's mute button: lines are still written and kept, just not played
+        self.speaking = None  # the line being said right now (the dashboard subtitles it)
         if not self.can_speak:
             print("ELEVENLABS_API_KEY not set (see laptop/.env): lines are printed, not spoken.")
         self._work = ThreadPoolExecutor(max_workers=2)
@@ -198,11 +200,16 @@ class Roaster:
         while True:
             text, mp3 = self._lines.get()
             print(f"  PLUSHIE SAYS: {text}" + ("  (muted)" if self.muted else ""))
-            if mp3 and not self.muted:
-                try:
+            self.speaking = text
+            try:
+                if mp3 and not self.muted:
                     self.plushie.say(mp3)
-                except Exception as error:
-                    print(f"  couldn't play the line: {error}")
+                else:
+                    time.sleep(3)  # long enough to read the subtitle
+            except Exception as error:
+                print(f"  couldn't play the line: {error}")
+            finally:
+                self.speaking = None
 
 
 if __name__ == "__main__":

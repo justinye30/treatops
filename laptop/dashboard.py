@@ -182,14 +182,15 @@ class Dashboard:
                                    "audio": (folder / "roast.mp3").exists(),
                                    "audio_at": round(recording["audio_at"] or REPLAY_BEFORE, 2)}
                 self._save_board()
-        self.log(f"Replay saved ({len(recording['frames'])} frames)")
+        print(f"  replay saved ({len(recording['frames'])} frames)")
 
     # ---------- The web side ----------
 
     def state(self):
         with self._lock:
             entries = list(self.board.values())
-        leaders = sorted((e for e in entries if e["taken"] > 0), key=lambda e: (-e["taken"], -e["at"]))
+        # Big backs only: two or more, or caught (one piece is a good choice, not a big back).
+        leaders = sorted((e for e in entries if e["taken"] >= 2 or e["caught"]), key=lambda e: (-e["taken"], -e["at"]))
         replays = sorted((e for e in entries if e["replay"]), key=lambda e: -e["at"])
         return {
             "status": self.status,

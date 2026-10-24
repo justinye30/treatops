@@ -113,6 +113,12 @@ def load_region():
     return None
 
 
+def ordinal(n):
+    """1st, 2nd, 3rd, 4th... 11th, 12th, 13th... 21st."""
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 def hand_in(landmarks, outline):
     """True if any of the hand's 21 landmarks falls inside the outline."""
     return any(box_tracker.contains(outline, lm.x, lm.y) for lm in landmarks)
@@ -176,7 +182,7 @@ class Show:
         self.visitor = {"id": visitor_id, "taken": 0, "warned": False, "scared": False,
                         "roast": self.roaster.prepare(frame) if frame is not None else None}
         self.dashboard.visitor_started(visitor_id, frame)
-        self.dashboard.log("New trick-or-treater")
+        self.dashboard.log("Someone's at the box")
         print("  new trick-or-treater")
 
     def reach(self, frame):
@@ -192,7 +198,7 @@ class Show:
         visitor["taken"] += pieces
         print(f"  this trick-or-treater has taken {visitor['taken']}")
         self.dashboard.visitor_took(visitor["id"], visitor["taken"])
-        self.dashboard.log(f"Took {pieces} (that's {visitor['taken']})")
+        self.dashboard.log(f"Took {pieces} · {visitor['taken']} this visit")
         if visitor["scared"]:
             return  # already caught: the lid's shut and the roast is playing
         if visitor["taken"] >= 3:
@@ -215,7 +221,7 @@ class Show:
         self.plushie.eyes("ANGRY")
         self.plushie.count(self.victims)
         self.dashboard.caught(visitor["id"], now)
-        self.dashboard.log(f"CAUGHT! Victim #{self.victims}")
+        self.dashboard.log(f"Caught · {ordinal(self.victims)} tonight")
         visitor_id = visitor["id"]
         self.roaster.roast(visitor["roast"], wait=ROAST_WAIT_SECONDS,
                            on_spoken=lambda text, mp3: self.dashboard.roast_spoken(visitor_id, text, mp3))
@@ -231,7 +237,7 @@ class Show:
         """The current trick-or-treater is done (they left, or the dashboard said so)."""
         if self.visitor is not None:
             print(f"  trick-or-treater gone, took {self.visitor['taken']}")
-            self.dashboard.log(f"Trick-or-treater gone, took {self.visitor['taken']}")
+            self.dashboard.log(f"Left with {self.visitor['taken']}")
         self.visitor = None
         self.watching = False
         if self.reopen_at is None:
@@ -366,7 +372,7 @@ def main():
                     show.force_scare(frame, now)
                 elif action == "roast":  # roast whoever's in front of the camera, right now
                     roaster.roast(roaster.prepare(frame), wait=12.0,
-                                  on_spoken=lambda text, mp3: dashboard.log(f'Roast: "{text}"'))
+                                  on_spoken=lambda text, mp3: dashboard.log(f'Roasted: "{text}"'))
                 elif action == "end_visitor":
                     show.leave()
                 elif action == "lid":
@@ -481,8 +487,6 @@ def main():
                 pieces = PIECES.get(choice)  # "unclear" and "refused" don't count either way
                 if pieces is not None:
                     show.took(pieces, now)
-                else:
-                    dashboard.log(f"Grab counted as {choice}")
 
             show.tick(now, hand_near=near, busy=grab is not None or bool(counts))
 
@@ -490,8 +494,11 @@ def main():
             status = (f"last grab: {last_count}   this visitor: {visitor['taken'] if visitor else '-'}"
                       f"   victims: {show.victims}")
             dashboard.set_status(
-                victims=show.victims, visitor=visitor["taken"] if visitor else None, last_count=last_count,
-                fps=round(fps), box=source if outline is not None else None, hand_in=watcher.inside,
+                victims=show.victims, visitor=visitor["taken"] if visitor else None,
+                warned=bool(visitor and visitor["warned"]), scared=bool(visitor and visitor["scared"]),
+                last_grab=last_count.split(" (")[0],  # the count without the model's confidence
+                hand_in=watcher.inside, hand_in_for=round(watcher.dwell(now), 1), linger=LINGER_SECONDS,
+                speaking=roaster.speaking, fps=round(fps), box=source if outline is not None else None,
                 muted=roaster.muted, plushie=plushie.host, eyes=plushie.mood, lid_closed=plushie.lid_closed,
                 counting=counting_enabled)
             draw_overlay(frame, outline, source, watcher, result, now, fps, status)
