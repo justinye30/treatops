@@ -4,8 +4,16 @@ __pycache__/
 # API keys live here; copy laptop/.env.example to start one
 .env
 
+# Wi-Fi password for the ESP32; copy esp32/candy_cop/secrets.example.h to start one
+esp32/**/secrets.h
+
 # Downloaded on first run by laptop/hand_in_bowl.py
 laptop/hand_landmarker.task
 
-# Bowl position depends on where the camera sits; redraw it per setup
+# A hand-drawn box position depends on where the camera sits; redraw it per setup
 laptop/bowl_region.json
+
+# Made by the laptop scripts: printable markers, spoken canned lines, photos of grabs (SAVE_GRABS=1)
+laptop/markers.png
+laptop/voice_cache/
+laptop/grabs/
