@@ -1,5 +1,5 @@
 """
-The candy cop: watches the candy box, counts what each trick-or-treater takes, and makes the plushie react.
+TreatOps: watches the candy box, counts what each trick-or-treater takes, and makes the plushie react.
 
 Run:  python hand_in_bowl.py
 
@@ -15,6 +15,9 @@ What happens:
   3+ pieces, or a hand
   in the box for 3 s       the lid closes, eyes ANGRY, the roast, VICTIMS + 1; the lid opens after RESET_SECONDS
 A trick-or-treater's total resets once no hand has been near the box for VISITOR_GONE_SECONDS.
+
+The dashboard (dashboard.py) is at http://localhost:8080: the camera live, TOP BIG BACKS, roast replays and
+buttons to drive it all.
 
 Keys in the video window:
   r       draw the box by hand (and stop using the markers)
@@ -40,6 +43,7 @@ from mediapipe.tasks.python import BaseOptions, vision
 import box_tracker
 from box_tracker import BoxTracker
 from candy_counter import PIECES, changed_fraction, count_taken, crop_to_hands, sharpness
+from dashboard import Dashboard
 from plushie import Plushie
 from roaster import Roaster
 
@@ -148,13 +152,17 @@ class BowlWatcher:
 
 
 class Show:
-    """What the plushie does about each trick-or-treater: their running total, the tiers and the scare."""
+    """
+    What the plushie does about each trick-or-treater: their running total, the tiers and the scare. Each one
+    goes on the dashboard's leaderboard, with the photo their roast was written from.
+    """
 
-    def __init__(self, plushie, roaster):
+    def __init__(self, plushie, roaster, dashboard):
         self.plushie = plushie
         self.roaster = roaster
+        self.dashboard = dashboard
         self.victims = 0
-        self.visitor = None    # this trick-or-treater: {"taken", "roast", "warned", "scared"}
+        self.visitor = None    # this trick-or-treater: {"id", "taken", "roast", "warned", "scared"}
         self.watching = False  # a hand is (or was just) near the box: eyes suspicious
         self.last_hand = 0.0
         self.reopen_at = None
@@ -162,19 +170,29 @@ class Show:
         plushie.eyes("CALM")
         plushie.count(0)
 
+    def _arrive(self, frame):
+        """A new trick-or-treater: their roast starts being written from this frame of their costume."""
+        visitor_id = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
+        self.visitor = {"id": visitor_id, "taken": 0, "warned": False, "scared": False,
+                        "roast": self.roaster.prepare(frame) if frame is not None else None}
+        self.dashboard.visitor_started(visitor_id, frame)
+        self.dashboard.log("New trick-or-treater")
+        print("  new trick-or-treater")
+
     def reach(self, frame):
         """A hand went into the box. The first time for this trick-or-treater, start their roast."""
         if self.visitor is None:
-            print("  new trick-or-treater")
-            self.visitor = {"taken": 0, "roast": self.roaster.prepare(frame), "warned": False, "scared": False}
+            self._arrive(frame)
 
     def took(self, pieces, now):
         """A grab was counted."""
         if self.visitor is None:  # counted after they'd gone: still theirs, but no costume to roast
-            self.visitor = {"taken": 0, "roast": None, "warned": False, "scared": False}
+            self._arrive(None)
         visitor = self.visitor
         visitor["taken"] += pieces
         print(f"  this trick-or-treater has taken {visitor['taken']}")
+        self.dashboard.visitor_took(visitor["id"], visitor["taken"])
+        self.dashboard.log(f"Took {pieces} (that's {visitor['taken']})")
         if visitor["scared"]:
             return  # already caught: the lid's shut and the roast is playing
         if visitor["taken"] >= 3:
@@ -196,8 +214,28 @@ class Show:
         self.plushie.lid(closed=True)
         self.plushie.eyes("ANGRY")
         self.plushie.count(self.victims)
-        self.roaster.roast(visitor["roast"], wait=ROAST_WAIT_SECONDS)
+        self.dashboard.caught(visitor["id"], now)
+        self.dashboard.log(f"CAUGHT! Victim #{self.victims}")
+        visitor_id = visitor["id"]
+        self.roaster.roast(visitor["roast"], wait=ROAST_WAIT_SECONDS,
+                           on_spoken=lambda text, mp3: self.dashboard.roast_spoken(visitor_id, text, mp3))
         self.reopen_at = now + RESET_SECONDS
+
+    def force_scare(self, frame, now):
+        """The dashboard's scare button: whoever's there gets it (a new visitor if nobody is)."""
+        if self.visitor is None:
+            self._arrive(frame)
+        self.scare(now)
+
+    def leave(self):
+        """The current trick-or-treater is done (they left, or the dashboard said so)."""
+        if self.visitor is not None:
+            print(f"  trick-or-treater gone, took {self.visitor['taken']}")
+            self.dashboard.log(f"Trick-or-treater gone, took {self.visitor['taken']}")
+        self.visitor = None
+        self.watching = False
+        if self.reopen_at is None:
+            self.plushie.eyes("CALM")
 
     def tick(self, now, hand_near, busy):
         """Every frame: eyes on approach, the lid back open after a scare, the visitor leaving."""
@@ -212,12 +250,7 @@ class Show:
             self.plushie.eyes("CALM")
         gone = now - self.last_hand > VISITOR_GONE_SECONDS
         if gone and not busy and (self.visitor is not None or self.watching):
-            if self.visitor is not None:
-                print(f"  trick-or-treater gone, took {self.visitor['taken']}")
-            self.visitor = None
-            self.watching = False
-            if self.reopen_at is None:
-                self.plushie.eyes("CALM")
+            self.leave()
 
 
 def open_camera():
@@ -282,9 +315,10 @@ def main():
     )
     landmarker = vision.HandLandmarker.create_from_options(options)
 
+    dashboard = Dashboard()
     plushie = Plushie(os.environ.get("PLUSHIE_HOST"))
     roaster = Roaster(plushie)
-    show = Show(plushie, roaster)
+    show = Show(plushie, roaster, dashboard)
 
     counting_enabled = bool(os.environ.get("OPENAI_API_KEY"))
     if not counting_enabled:
@@ -323,6 +357,27 @@ def main():
             now = time.monotonic()
             fps = 0.9 * fps + 0.1 / max(now - last_frame_time, 1e-6)
             last_frame_time = now
+            dashboard.feed(frame, now)  # the clean picture, for replays
+
+            # The dashboard's buttons.
+            for action, value in dashboard.controls():
+                print(f"[{now - start:7.1f}s] DASHBOARD {action} {value if value is not None else ''}")
+                if action == "scare":
+                    show.force_scare(frame, now)
+                elif action == "roast":  # roast whoever's in front of the camera, right now
+                    roaster.roast(roaster.prepare(frame), wait=12.0,
+                                  on_spoken=lambda text, mp3: dashboard.log(f'Roast: "{text}"'))
+                elif action == "end_visitor":
+                    show.leave()
+                elif action == "lid":
+                    plushie.lid(closed=bool(value))
+                elif action == "eyes":
+                    plushie.eyes(value)
+                elif action == "mute":
+                    roaster.muted = bool(value)
+                    dashboard.log("Voice muted" if roaster.muted else "Voice on")
+                elif action == "clear_board":
+                    dashboard.clear()
 
             # Where the box is: its markers (looked for every few frames), else the hand-drawn box.
             if use_markers and frame_index % MARKER_EVERY == 1:
@@ -418,6 +473,7 @@ def main():
                 except Exception as e:
                     last_count = "count failed"
                     print(f"[{now - start:7.1f}s] COUNT  failed: {e}")
+                    dashboard.log("Couldn't count that grab")
                     continue
                 last_count = f"{choice} ({confidence:.2f})"
                 print(f"[{now - start:7.1f}s] COUNT  {choice} piece(s), confidence {confidence:.2f}, "
@@ -425,14 +481,22 @@ def main():
                 pieces = PIECES.get(choice)  # "unclear" and "refused" don't count either way
                 if pieces is not None:
                     show.took(pieces, now)
+                else:
+                    dashboard.log(f"Grab counted as {choice}")
 
             show.tick(now, hand_near=near, busy=grab is not None or bool(counts))
 
             visitor = show.visitor
             status = (f"last grab: {last_count}   this visitor: {visitor['taken'] if visitor else '-'}"
                       f"   victims: {show.victims}")
+            dashboard.set_status(
+                victims=show.victims, visitor=visitor["taken"] if visitor else None, last_count=last_count,
+                fps=round(fps), box=source if outline is not None else None, hand_in=watcher.inside,
+                muted=roaster.muted, plushie=plushie.host, eyes=plushie.mood, lid_closed=plushie.lid_closed,
+                counting=counting_enabled)
             draw_overlay(frame, outline, source, watcher, result, now, fps, status)
-            cv2.imshow("Candy cop", frame)
+            dashboard.show(frame, now)
+            cv2.imshow("TreatOps", frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):

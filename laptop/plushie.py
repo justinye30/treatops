@@ -2,7 +2,7 @@
 The plushie: an ESP32 with a speaker, on the same Wi-Fi as this laptop.
 
 The laptop does the thinking (OpenAI, ElevenLabs) and the plushie does the talking. say(mp3) keeps the clip
-in a small web server here and asks the ESP32 to stream it and play it (esp32/candy_cop). Commands such as
+in a small web server here and asks the ESP32 to stream it and play it (esp32/treatops). Commands such as
 LID CLOSE go to the ESP32 the same way:
 
   LID OPEN | LID CLOSE                   the cardboard lid
@@ -10,7 +10,7 @@ LID CLOSE go to the ESP32 the same way:
   LOOK x y                               look that way (-1..1 each, as the plushie's face is seen)
   COUNT n                                flash the victims counter
 
-Set PLUSHIE_HOST in laptop/.env to the ESP32's IP (it prints it on boot) or candycop.local. Without it the
+Set PLUSHIE_HOST in laptop/.env to the ESP32's IP (it prints it on boot) or treatops.local. Without it the
 voice plays on this laptop's speakers and commands are only printed, so everything can be tested on a desk.
 If the venue's Wi-Fi keeps devices apart, put the laptop and the ESP32 on a phone hotspot.
 """
@@ -36,6 +36,8 @@ KEEP_CLIPS = 8
 class Plushie:
     def __init__(self, host=None):
         self.host = host or None
+        self.mood = "CALM"        # what it was last told, for the dashboard
+        self.lid_closed = False
         self._clips = OrderedDict()  # name -> MP3 bytes, served to the ESP32
         self._names = itertools.count()
         self._commands = queue.Queue()
@@ -69,9 +71,11 @@ class Plushie:
         self._commands.put(text)
 
     def lid(self, closed):
+        self.lid_closed = closed
         self.command("LID CLOSE" if closed else "LID OPEN")
 
     def eyes(self, mood):
+        self.mood = mood
         self.command(f"EYES {mood}")
 
     def look(self, x, y):

@@ -1,0 +1,519 @@
+<!doctype html>
+<!--
+  TreatOps' dashboard, served by laptop/dashboard.py (http://localhost:8080). Polls /api/state every second;
+  the camera is /stream.mjpg; buttons POST to /api/control. Open with ?demo to see it with made-up data and
+  no Python running.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TreatOps</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Layout: a night-shift ops console for one candy box. Command bar; the CCTV feed with the visit meter
+     under it, the tally and the controls beside it; then the booking board of Top Big Backs, the dispatch
+     log, and the incident footage. Asphalt ground, candy-corn yellow for controls, orange for anyone caught. */
+  :root {
+    --asphalt: #1e2226;
+    --asphalt-raised: #262b30;
+    --rule: #383f46;
+    --chalk: #ebe5d7;
+    --chalk-dim: #9d978b;
+    --corn-yellow: #f2c037;
+    --corn-orange: #ea7624;
+    --corn-white: #f6efdf;
+    --ok: #8fbf6a;
+    --display: "Big Shoulders Display", "Arial Narrow", "Roboto Condensed", sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--asphalt); color: var(--chalk); font: 15px/1.5 var(--body); }
+  .shell { max-width: 1480px; margin: 0 auto; padding-block: 0 48px; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+  :focus-visible { outline: 2px solid var(--corn-yellow); outline-offset: 2px; }
+  .label { font: 500 11px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--chalk-dim); }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* Command bar */
+  .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 28px;
+    padding-block: 18px; border-bottom: 1px solid var(--rule); margin-bottom: 22px; }
+  .mark { display: flex; align-items: center; gap: 14px; }
+  .corn { width: 22px; height: 28px; clip-path: polygon(50% 0, 100% 100%, 0 100%);
+    background: linear-gradient(var(--corn-white) 0 33%, var(--corn-orange) 33% 72%, var(--corn-yellow) 72%); }
+  .mark h1 { margin: 0; font: 900 34px/0.9 var(--display); letter-spacing: 0.02em; text-transform: uppercase; }
+  .mark p { margin: 3px 0 0; }
+  .lamps { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: center; }
+  .lamp { display: flex; align-items: center; gap: 8px; font: 500 12px/1 var(--mono); color: var(--chalk-dim); }
+  .lamp i { width: 8px; height: 8px; background: var(--rule); }
+  .lamp.on i { background: var(--ok); }
+  .lamp.warn i { background: var(--corn-yellow); }
+  .lamp b { color: var(--chalk); font-weight: 500; }
+  .clock { font: 500 22px/1 var(--mono); color: var(--chalk); }
+
+  /* Grid */
+  .top, .mid { display: grid; gap: 22px; }
+  .top { grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); }
+  .mid { grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); margin-top: 34px; }
+  @media (max-width: 1020px) { .top, .mid { grid-template-columns: 1fr; } }
+  h2 { margin: 0; font: 900 26px/1 var(--display); letter-spacing: 0.03em; text-transform: uppercase; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+
+  /* CCTV feed */
+  .feed { position: relative; aspect-ratio: 16 / 9; max-width: 100%; background: #0c0e10; border: 1px solid var(--rule); overflow: hidden; }
+  .feed img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .osd { position: absolute; font: 500 13px/1 var(--mono); color: #fff; text-shadow: 0 1px 2px #000, 0 0 1px #000; letter-spacing: 0.04em; }
+  .osd.tl { top: 14px; left: 16px; }
+  .osd.tr { top: 14px; right: 16px; display: flex; gap: 8px; align-items: center; }
+  .osd.bl { bottom: 14px; left: 16px; right: 16px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .rec { width: 9px; height: 9px; border-radius: 50%; background: var(--corn-orange); }
+  @media (prefers-reduced-motion: no-preference) { .rec { animation: blink 1s steps(1) infinite; } }
+  @keyframes blink { 50% { opacity: 0; } }
+  .osd .alert { background: var(--corn-orange); color: #1b1006; padding: 3px 6px; text-shadow: none; }
+
+  /* Visit meter: the four tiers, lit up to where this trick-or-treater is */
+  .meter { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; margin-top: 14px; }
+  .meter .now { font: 900 40px/0.9 var(--display); min-width: 68px; }
+  .meter .now small { display: block; margin-top: 4px; }
+  .tiers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+  .tier { padding: 9px 10px 8px; background: var(--asphalt-raised); border-top: 3px solid var(--rule); }
+  .tier b { display: block; font: 900 17px/1 var(--display); text-transform: uppercase; letter-spacing: 0.03em; color: var(--chalk-dim); }
+  .tier span { font: 400 12px/1.3 var(--body); color: var(--chalk-dim); }
+  .tier.lit { border-top-color: var(--corn-yellow); }
+  .tier.lit b { color: var(--chalk); }
+  .tier.lit.caught { border-top-color: var(--corn-orange); background: color-mix(in srgb, var(--corn-orange) 16%, var(--asphalt-raised)); }
+
+  /* Tally and controls */
+  .side { display: grid; gap: 22px; align-content: start; }
+  .tally { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .tally div { padding: 12px 0 10px; }
+  .tally div + div { padding-left: 14px; border-left: 1px solid var(--rule); }
+  .tally b { display: block; font: 900 44px/0.95 var(--display); }
+  .tally .caught b { color: var(--corn-orange); }
+  .group { display: grid; gap: 8px; }
+  .group + .group { margin-top: 16px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+  button { font: 600 14px/1 var(--body); color: var(--chalk); background: var(--asphalt-raised); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 11px 14px; cursor: pointer; }
+  button:hover { border-color: #56606a; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--corn-orange); border-color: var(--corn-orange); color: #1b1006; }
+  button.primary:hover { background: #f2852f; }
+  .switch { display: inline-flex; justify-self: start; flex-wrap: wrap; border: 1px solid var(--rule); border-radius: 3px; }
+  .switch button { border: 0; border-radius: 0; background: transparent; color: var(--chalk-dim); padding: 9px 12px; font-weight: 500; }
+  .switch button + button { border-left: 1px solid var(--rule); }
+  .switch button[aria-pressed="true"] { background: var(--corn-yellow); color: #1d1604; font-weight: 600; }
+  .quiet { background: none; border: 0; padding: 4px 0; color: var(--chalk-dim); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; }
+  .quiet:hover { color: var(--chalk); }
+
+  /* Booking board */
+  .board { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 0 26px; }
+  @media (max-width: 720px) { .board { grid-template-columns: 1fr; } }
+  .booking { align-self: start; }
+  .booking .shot { position: relative; aspect-ratio: 4 / 5; max-width: 100%; background:
+      repeating-linear-gradient(to bottom, transparent 0 23px, rgba(235, 229, 215, 0.13) 23px 24px), #15181b; overflow: hidden; }
+  .booking .shot img { position: absolute; inset: 9% 9% 0; width: 82%; height: 91%; object-fit: cover; }
+  .placard { background: #0f1113; color: var(--corn-white); padding: 12px 14px 13px; font: 500 12px/1.5 var(--mono); }
+  .placard strong { display: block; font: 900 30px/1 var(--display); letter-spacing: 0.03em; text-transform: uppercase; color: var(--corn-yellow); margin-bottom: 6px; }
+  .placard .pcs { color: var(--corn-orange); }
+  .booking q { display: block; margin-top: 12px; font-size: 16px; line-height: 1.45; text-wrap: pretty; }
+  .rows { list-style: none; margin: 0; padding: 0; }
+  .rows li { display: grid; grid-template-columns: 34px 56px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--rule); }
+  .rows li:first-child { border-top: 1px solid var(--rule); }
+  .rank { font: 900 26px/1 var(--display); color: var(--chalk-dim); text-align: right; }
+  .thumb { width: 56px; height: 56px; object-fit: cover; background: #15181b; display: block; }
+  .who { min-width: 0; }
+  .who .case { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+  .who q { display: block; color: var(--chalk-dim); font-size: 13px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag { font: 600 10px/1 var(--mono); letter-spacing: 0.12em; padding: 3px 5px; background: var(--corn-orange); color: #1b1006; }
+  .pcs-cell { text-align: right; }
+  .pcs-cell b { display: block; font: 900 30px/0.9 var(--display); }
+  .link { background: none; border: 0; padding: 0; margin-top: 4px; color: var(--corn-yellow); font: 500 12px/1 var(--mono); text-decoration: underline; text-underline-offset: 3px; }
+  .empty { color: var(--chalk-dim); padding: 18px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+
+  /* Dispatch log */
+  .log { list-style: none; margin: 0; padding: 0; font: 400 13px/1.45 var(--mono); max-height: 520px; overflow: auto; border-top: 1px solid var(--rule); }
+  .log li { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .log time { color: var(--chalk-dim); }
+  .log .hot { color: var(--corn-orange); }
+
+  /* Incident footage */
+  .footage { margin-top: 34px; }
+  .reels { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
+  .reel { display: flex; flex-direction: column; align-self: start; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+  .reel .frame { position: relative; aspect-ratio: 16 / 9; max-width: 100%; background: #0c0e10; overflow: hidden; border: 1px solid var(--rule); }
+  .reel img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .reel:hover .frame { border-color: var(--corn-yellow); }
+  .reel .osd { font-size: 11px; }
+  .reel p { margin: 8px 0 0; font-size: 13px; color: var(--chalk-dim); }
+  .reel p b { color: var(--chalk); font-weight: 600; }
+
+  /* Player */
+  dialog { border: 1px solid var(--rule); border-radius: 0; background: var(--asphalt); color: var(--chalk); padding: 0; width: min(960px, 94vw); }
+  dialog::backdrop { background: rgba(10, 12, 14, 0.85); }
+  .player-feed { position: relative; aspect-ratio: 16 / 9; background: #000; }
+  .player-feed img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .scrub { height: 3px; background: var(--rule); }
+  .scrub i { display: block; height: 100%; width: 0; background: var(--corn-orange); }
+  .player-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px 16px; }
+  .player-bar q { font-size: 17px; max-width: 62ch; }
+
+  .offline { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+    background: var(--corn-orange); color: #1b1006; padding: 9px 14px; font: 600 14px/1.3 var(--body); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="bar">
+    <div class="mark">
+      <div class="corn" aria-hidden="true"></div>
+      <div>
+        <h1>TreatOps</h1>
+        <p class="label">Candy box security · 31 Oct</p>
+      </div>
+    </div>
+    <div class="lamps">
+      <span class="lamp" id="lamp-cam"><i></i>CAM <b id="lamp-cam-v">-</b></span>
+      <span class="lamp" id="lamp-count"><i></i>COUNT <b id="lamp-count-v">-</b></span>
+      <span class="lamp" id="lamp-voice"><i></i>VOICE <b id="lamp-voice-v">-</b></span>
+      <span class="lamp" id="lamp-plush"><i></i>PLUSHIE <b id="lamp-plush-v">-</b></span>
+      <span class="clock num" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <div class="top">
+    <section aria-label="Camera">
+      <div class="feed">
+        <img id="live" alt="Live camera over the candy box" src="/stream.mjpg">
+        <div class="osd tl">CAM 01 · CANDY BOX</div>
+        <div class="osd tr"><span class="rec" id="rec"></span><span>REC</span><span class="num" id="osd-time">--:--:--</span></div>
+        <div class="osd bl"><span id="osd-box">BOX -</span><span id="osd-hand">CLEAR</span><span id="osd-grab">LAST GRAB -</span></div>
+      </div>
+      <div class="meter" aria-live="polite">
+        <div class="now num" id="visit">0<small class="label">pcs this visit</small></div>
+        <div class="tiers" id="tiers">
+          <div class="tier" data-tier="0"><b>Looking</b><span>0 pcs</span></div>
+          <div class="tier" data-tier="1"><b>Good choice</b><span>1 pc</span></div>
+          <div class="tier" data-tier="2"><b>Warned</b><span>2 pcs</span></div>
+          <div class="tier" data-tier="3"><b>Caught</b><span>3+ or lingering</span></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side" aria-label="Tally and controls">
+      <div class="tally">
+        <div class="caught"><b class="num" id="victims">0</b><span class="label">Caught</span></div>
+        <div><b class="num" id="candies">0</b><span class="label">Pcs taken</span></div>
+        <div><b class="num" id="visitors">0</b><span class="label">Visitors</span></div>
+      </div>
+      <div>
+        <div class="group">
+          <span class="label">Response</span>
+          <div class="buttons">
+            <button class="primary" data-action="scare">Scare now</button>
+            <button data-action="roast">Roast this costume</button>
+            <button data-action="end_visitor">Release visitor</button>
+          </div>
+        </div>
+        <div class="group">
+          <span class="label">Lid</span>
+          <div class="switch" id="lid">
+            <button data-action="lid" data-value="false" aria-pressed="false">Open</button>
+            <button data-action="lid" data-value="true" aria-pressed="false">Shut</button>
+          </div>
+        </div>
+        <div class="group">
+          <span class="label">Eyes</span>
+          <div class="switch" id="eyes">
+            <button data-action="eyes" data-value="CALM" aria-pressed="false">Calm</button>
+            <button data-action="eyes" data-value="SUSPICIOUS" aria-pressed="false">Suspicious</button>
+            <button data-action="eyes" data-value="PLEASED" aria-pressed="false">Pleased</button>
+            <button data-action="eyes" data-value="ANGRY" aria-pressed="false">Angry</button>
+          </div>
+        </div>
+        <div class="group">
+          <span class="label">Voice</span>
+          <div class="switch" id="voice">
+            <button data-action="mute" data-value="false" aria-pressed="false">On</button>
+            <button data-action="mute" data-value="true" aria-pressed="false">Muted</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="mid">
+    <section aria-labelledby="board-title">
+      <div class="head"><h2 id="board-title">Top Big Backs</h2><span class="label">Ranked by pieces taken</span></div>
+      <div id="board"></div>
+    </section>
+    <section aria-labelledby="log-title">
+      <div class="head"><h2 id="log-title">Dispatch</h2><button class="quiet" id="clear">Clear the board</button></div>
+      <ul class="log" id="log"></ul>
+    </section>
+  </div>
+
+  <section class="footage" aria-labelledby="footage-title">
+    <div class="head"><h2 id="footage-title">Incident footage</h2><span class="label">Every catch, with the roast</span></div>
+    <div class="reels" id="reels"></div>
+  </section>
+</div>
+
+<dialog id="player" aria-label="Incident replay">
+  <div class="player-feed">
+    <img id="player-frame" alt="Replay of the catch">
+    <div class="osd tl" id="player-case">INCIDENT</div>
+    <div class="osd tr num" id="player-time">00:00.0</div>
+  </div>
+  <div class="scrub"><i id="player-scrub"></i></div>
+  <div class="player-bar">
+    <q id="player-roast"></q>
+    <div class="buttons">
+      <button id="player-again">Play again</button>
+      <button id="player-close">Close</button>
+    </div>
+  </div>
+</dialog>
+<div class="offline" id="offline" hidden>Can't reach TreatOps. Is hand_in_bowl.py running?</div>
+
+<script>
+const DEMO = new URLSearchParams(location.search).has('demo');
+const $ = (id) => document.getElementById(id);
+const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const two = (n) => String(n).padStart(2, '0');
+const clock = (date) => `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
+const hhmm = (seconds) => { const d = new Date(seconds * 1000); return `${two(d.getHours())}:${two(d.getMinutes())}`; };
+// A visitor's id is their arrival time (YYYYMMDD-HHMMSS-mmm): its HHMMSS is the case number.
+const caseNo = (entry) => (entry.id.split('-')[1] || entry.id).slice(0, 6);
+const pcs = (n) => `${n} ${n === 1 ? 'pc' : 'pcs'}`;
+
+// ---------- Talking to the Python ----------
+
+async function control(action, value) {
+  if (DEMO) { demo.log.unshift({ at: Date.now() / 1000, text: `Dashboard: ${action} ${value ?? ''}` }); return; }
+  try {
+    await fetch('/api/control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, value }) });
+  } catch { /* the next poll shows it's unreachable */ }
+}
+document.querySelectorAll('button[data-action]').forEach((button) => {
+  button.addEventListener('click', () => {
+    let value = button.dataset.value ?? null;
+    if (value === 'true' || value === 'false') value = value === 'true';
+    if (DEMO) demo.apply(button.dataset.action, value);
+    control(button.dataset.action, value);
+  });
+});
+$('clear').addEventListener('click', () => {
+  if (confirm('Clear Top Big Backs, their photos and all incident footage?')) control('clear_board');
+});
+
+async function poll() {
+  try {
+    const state = DEMO ? demo.state() : await (await fetch('/api/state', { cache: 'no-store' })).json();
+    $('offline').hidden = true;
+    render(state);
+  } catch {
+    $('offline').hidden = false;
+    setLamp('lamp-cam', 'off', 'offline');
+  }
+}
+
+// ---------- Drawing it ----------
+
+function setLamp(id, level, text) {
+  $(id).className = `lamp ${level}`;
+  $(`${id}-v`).textContent = text;
+}
+const pressed = (group, value) => document.querySelectorAll(`#${group} button`).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.value === String(value))));
+
+let lastBoard = '', lastReels = '', reelsById = {};
+function render(state) {
+  const s = state.status || {};
+  setLamp('lamp-cam', s.fps ? 'on' : 'warn', s.fps ? `${s.fps} fps` : 'no picture');
+  setLamp('lamp-count', s.counting ? 'on' : 'warn', s.counting ? 'on' : 'off (no key)');
+  setLamp('lamp-voice', s.muted ? 'warn' : 'on', s.muted ? 'muted' : 'on');
+  setLamp('lamp-plush', s.plushie ? 'on' : 'warn', s.plushie ? s.plushie : 'laptop speakers');
+
+  $('osd-box').textContent = s.box ? `BOX ${s.box.toUpperCase()}` : 'BOX NOT FOUND';
+  $('osd-hand').textContent = s.hand_in ? 'HAND IN BOX' : 'CLEAR';
+  $('osd-hand').className = s.hand_in ? 'alert' : '';
+  $('osd-grab').textContent = `LAST GRAB ${s.last_count ?? '-'}`.toUpperCase();
+
+  const visit = s.visitor;
+  $('visit').firstChild.textContent = visit ?? 0;
+  const tier = visit == null ? -1 : Math.min(3, visit);
+  document.querySelectorAll('.tier').forEach((el) => {
+    const t = Number(el.dataset.tier);
+    el.classList.toggle('lit', t <= tier);
+    el.classList.toggle('caught', t === 3 && tier === 3);
+  });
+
+  $('victims').textContent = s.victims ?? 0;
+  $('candies').textContent = state.candies ?? 0;
+  $('visitors').textContent = state.visitors ?? 0;
+  pressed('lid', !!s.lid_closed);
+  pressed('eyes', s.eyes ?? 'CALM');
+  pressed('voice', !!s.muted);
+
+  const board = JSON.stringify(state.board);
+  if (board !== lastBoard) {
+    lastBoard = board;
+    $('board').innerHTML = renderBoard(state.board);
+  }
+  const reels = JSON.stringify(state.replays);
+  if (reels !== lastReels) {
+    lastReels = reels;
+    reelsById = Object.fromEntries(state.replays.map((e) => [e.id, e]));
+    $('reels').innerHTML = state.replays.length ? state.replays.map((e) => `
+      <button class="reel" data-replay="${esc(e.id)}">
+        <div class="frame">
+          <img alt="" src="${frameUrl(e, Math.min(e.replay.frames - 1, Math.round(e.replay.fps * 2.5)))}">
+          <div class="osd tl">INC ${caseNo(e)}</div>
+          <div class="osd tr num">${(e.replay.frames / e.replay.fps).toFixed(1)}s</div>
+        </div>
+        <p><b>${pcs(e.taken)}</b> · ${hhmm(e.at)}${e.roast ? ` · “${esc(e.roast)}”` : ''}</p>
+      </button>`).join('') : '<p class="empty">Nobody has been caught yet. Footage of each catch appears here.</p>';
+    // The board links to footage too.
+    Object.assign(reelsById, Object.fromEntries(state.board.filter((e) => e.replay).map((e) => [e.id, e])));
+  }
+  $('log').innerHTML = (state.events || []).map((ev) => `<li><time class="num">${clock(new Date(ev.at * 1000))}</time>
+    <span class="${/CAUGHT/.test(ev.text) ? 'hot' : ''}">${esc(ev.text)}</span></li>`).join('') || '<li><time></time><span>Quiet so far.</span></li>';
+}
+
+function renderBoard(entries) {
+  if (!entries.length) return '<p class="empty">No one has taken any candy yet.</p>';
+  const [top, ...rest] = entries;
+  return `<div class="board">
+    <figure class="booking" style="margin:0">
+      <div class="shot"><img alt="Costume of the biggest back" src="${photoUrl(top)}"></div>
+      <figcaption class="placard">
+        <strong>Biggest Back</strong>
+        TREATOPS · CASE ${caseNo(top)}<br>
+        BOOKED ${hhmm(top.at)} · 31 OCT<br>
+        <span class="pcs">TOOK ${pcs(top.taken).toUpperCase()}</span>${top.caught ? ' · CAUGHT' : ''}
+      </figcaption>
+      ${top.roast ? `<q>${esc(top.roast)}</q>` : ''}
+      ${top.replay ? `<button class="link" data-replay="${esc(top.id)}">Watch the catch</button>` : ''}
+    </figure>
+    <ol class="rows" start="2">${rest.map((e, i) => `
+      <li>
+        <span class="rank num">${i + 2}</span>
+        <img class="thumb" alt="" src="${photoUrl(e)}">
+        <div class="who">
+          <div class="case"><span class="label">Case ${caseNo(e)} · ${hhmm(e.at)}</span>${e.caught ? '<span class="tag">CAUGHT</span>' : ''}</div>
+          ${e.roast ? `<q>${esc(e.roast)}</q>` : ''}
+        </div>
+        <div class="pcs-cell"><b class="num">${e.taken}</b><span class="label">${e.taken === 1 ? 'pc' : 'pcs'}</span>
+          ${e.replay ? `<br><button class="link" data-replay="${esc(e.id)}">Footage</button>` : ''}</div>
+      </li>`).join('')}
+    </ol>
+  </div>`;
+}
+
+const photoUrl = (e) => DEMO ? demo.photo(e) : (e.photo ? `/data/photos/${e.id}.jpg` : demo.blank);
+const frameUrl = (e, i) => DEMO ? demo.photo(e) : `/data/replays/${e.id}/${String(i).padStart(4, '0')}.jpg`;
+
+// ---------- Replays: the frames as a flipbook, the roast's voice where it was said ----------
+
+let playing = null;
+document.addEventListener('click', (event) => {
+  const target = event.target.closest('[data-replay]');
+  if (target && reelsById[target.dataset.replay]) play(reelsById[target.dataset.replay]);
+});
+function play(entry) {
+  stop();
+  const { frames, fps, audio, audio_at } = entry.replay;
+  const images = Array.from({ length: frames }, (_, i) => Object.assign(new Image(), { src: frameUrl(entry, i) }));
+  const voice = audio && !DEMO ? new Audio(`/data/replays/${entry.id}/roast.mp3`) : null;
+  $('player-case').textContent = `INCIDENT ${caseNo(entry)} · ${pcs(entry.taken).toUpperCase()}`;
+  $('player-roast').textContent = entry.roast || '';
+  if (!$('player').open) $('player').showModal();
+  const started = performance.now();
+  const length = frames / fps;
+  let spoke = false;
+  playing = { voice, raf: 0 };
+  const tick = () => {
+    const elapsed = (performance.now() - started) / 1000;
+    const i = Math.min(frames - 1, Math.floor(elapsed * fps));
+    $('player-frame').src = images[i].src;
+    $('player-scrub').style.width = `${(100 * (i + 1)) / frames}%`;
+    $('player-time').textContent = `${Math.min(elapsed, length).toFixed(1).padStart(4, '0')} / ${length.toFixed(1)}s`;
+    if (voice && !spoke && elapsed >= (audio_at ?? 2)) { spoke = true; voice.play().catch(() => {}); }
+    if (i < frames - 1) playing.raf = requestAnimationFrame(tick);
+  };
+  tick();
+  $('player-again').onclick = () => play(entry);
+}
+function stop() {
+  if (!playing) return;
+  cancelAnimationFrame(playing.raf);
+  playing.voice?.pause();
+  playing = null;
+}
+$('player-close').addEventListener('click', () => $('player').close());
+$('player').addEventListener('close', stop);
+
+// ---------- The clock on the bar and the feed ----------
+
+setInterval(() => { const now = clock(new Date()); $('clock').textContent = now; $('osd-time').textContent = now; }, 250);
+
+// ---------- Demo data (?demo): made-up visitors, for looking at the page without the camera ----------
+
+const demo = {
+  blank: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 50"><rect width="40" height="50" fill="#15181b"/></svg>'),
+  photos: {},
+  photo(e) {
+    if (!this.photos[e.id]) {
+      const canvas = Object.assign(document.createElement('canvas'), { width: 320, height: 400 });
+      const g = canvas.getContext('2d');
+      g.fillStyle = '#2a2f35'; g.fillRect(0, 0, 320, 400);
+      g.fillStyle = e.demo.hue; g.beginPath(); g.arc(160, 150, 62, 0, 7); g.fill();
+      g.beginPath(); g.ellipse(160, 400, 130, 160, 0, Math.PI, 0); g.fill();
+      g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(118, 132, 84, 22);
+      g.fillStyle = '#ebe5d7'; g.font = '500 18px monospace'; g.textAlign = 'center'; g.fillText(e.demo.costume, 160, 300);
+      this.photos[e.id] = canvas.toDataURL('image/jpeg', 0.8);
+    }
+    return this.photos[e.id];
+  },
+  log: [],
+  status: { eyes: 'SUSPICIOUS', lid_closed: false, muted: false },
+  apply(action, value) {
+    if (action === 'eyes') this.status.eyes = value;
+    if (action === 'lid') this.status.lid_closed = value;
+    if (action === 'mute') this.status.muted = value;
+  },
+  state() {
+    const now = Date.now() / 1000;
+    const people = [
+      ['Spider-Man', 7, '#a3322a', "Bro's Spider-Man suit is straight off Temu and he still took seven. Nah."],
+      ['witch hat', 5, '#6a55a8', 'Not you in that dollar store witch hat grabbing extra candy. Negative aura.'],
+      ['inflatable dino', 4, '#5b8a43', "Ain't no way the inflatable dino is fanum taxing my whole box."],
+      ['bedsheet ghost', 2, '#b8b2a6', null],
+      ['pumpkin onesie', 1, '#d7782a', null],
+    ];
+    const entries = people.map(([costume, taken, hue, roast], i) => {
+      const at = now - 60 * (i * 9 + 4);
+      const d = new Date(at * 1000);
+      return { id: `20261031-${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}-000`, at, taken, caught: taken >= 3, roast,
+        photo: true, demo: { costume, hue }, replay: taken >= 3 ? { frames: 80, fps: 10, audio: false, audio_at: 2 } : null };
+    });
+    return {
+      status: { ...this.status, victims: 3, visitor: 2, last_count: '2 (0.91)', fps: 29, box: 'markers 4/4', hand_in: Math.floor(now) % 7 < 2, plushie: null, counting: true },
+      candies: entries.reduce((sum, e) => sum + e.taken, 0), visitors: 11, board: entries, replays: entries.filter((e) => e.replay),
+      events: [...this.log, { at: now - 25, text: "Took 2 (that's 2)" }, { at: now - 48, text: 'New trick-or-treater' },
+        { at: now - 300, text: 'Trick-or-treater gone, took 4' }, { at: now - 322, text: 'CAUGHT! Victim #3' },
+        { at: now - 323, text: "Took 3 (that's 4)" }, { at: now - 341, text: 'New trick-or-treater' }],
+    };
+  },
+};
+if (DEMO) $('live').src = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90"><rect width="160" height="90" fill="#101315"/><rect x="58" y="44" width="44" height="24" fill="#2b3036"/><text x="80" y="30" fill="#6f7780" font-family="monospace" font-size="5" text-anchor="middle">DEMO: the live camera shows here</text></svg>');
+
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

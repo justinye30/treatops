@@ -1,5 +1,5 @@
 /*
-  CANDY COP: the plushie's face and voice.
+  TREATOPS: the plushie's face and voice.
   Freenove ESP32 2.8" TFT (320 x 240 landscape) with the speaker on the internal DAC (GPIO25/26, amp
   enable on GPIO4, active LOW), as in the eyes sketch and the voice test.
 
@@ -17,12 +17,12 @@
                                         LOOK x y       look that way, -1..1 each (the hand), for a while
                                         COUNT n        flash "VICTIMS: n"
                                         LID OPEN | LID CLOSE
-    GET /ping                           answers "candycop"
+    GET /ping                           answers "treatops"
   The network and the voice run on core 0, the face on core 1, so drawing never makes the voice stutter.
 
   Libraries: TFT_eSPI (set up for this board, as for the eyes sketch), ESP8266Audio 2.x, ESP32 core 3.x.
   Copy secrets.example.h to secrets.h with your Wi-Fi. On boot the IP shows on screen and on the serial
-  monitor (115200), and it answers at candycop.local: put either in laptop/.env as PLUSHIE_HOST.
+  monitor (115200), and it answers at treatops.local: put either in laptop/.env as PLUSHIE_HOST.
 
   The touch panel is left out: its clock is GPIO25, which the DAC drives for the voice.
 */
@@ -45,7 +45,7 @@
 constexpr int AMP_ENABLE = 4;          // Freenove: active LOW
 constexpr float VOLUME = 0.25f;        // the voice test's starting volume
 constexpr int STREAM_BUFFER = 4 * 1024;  // small enough to fill quickly, so a line starts at once
-constexpr const char* HOSTNAME = "candycop";
+constexpr const char* HOSTNAME = "treatops";
 
 // The lid's servo, if it's wired to this board (-1: it isn't).
 constexpr int LID_SERVO_PIN = -1;
@@ -372,7 +372,7 @@ void updateFace(uint32_t t) {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.println("Candy Cop");
+  Serial.println("TreatOps");
   randomSeed(esp_random());
 
   tft.init();

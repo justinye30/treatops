@@ -4,7 +4,7 @@ __pycache__/
 # API keys live here; copy laptop/.env.example to start one
 .env
 
-# Wi-Fi password for the ESP32; copy esp32/candy_cop/secrets.example.h to start one
+# Wi-Fi password for the ESP32; copy esp32/treatops/secrets.example.h to start one
 esp32/**/secrets.h
 
 # Downloaded on first run by laptop/hand_in_bowl.py
@@ -17,3 +17,6 @@ laptop/bowl_region.json
 laptop/markers.png
 laptop/voice_cache/
 laptop/grabs/
+
+# The dashboard's leaderboard, photos of trick-or-treaters and roast replays: never commit these
+laptop/data/

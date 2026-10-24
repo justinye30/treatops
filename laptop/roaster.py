@@ -123,6 +123,7 @@ class Roaster:
         self.plushie = plushie
         self.can_roast = bool(os.environ.get("OPENAI_API_KEY"))
         self.can_speak = bool(os.environ.get("ELEVENLABS_API_KEY"))
+        self.muted = False  # the dashboard's mute button: lines are still written and kept, just not played
         if not self.can_speak:
             print("ELEVENLABS_API_KEY not set (see laptop/.env): lines are printed, not spoken.")
         self._work = ThreadPoolExecutor(max_workers=2)
@@ -150,8 +151,11 @@ class Roaster:
 
         return self._work.submit(make)
 
-    def roast(self, prepared, wait):
-        """Speaks the prepared roast, waiting up to `wait` seconds for it; a canned one if it isn't ready."""
+    def roast(self, prepared, wait, on_spoken=None):
+        """
+        Speaks the prepared roast, waiting up to `wait` seconds for it; a canned one if it isn't ready.
+        on_spoken(text, mp3) hears what's said just before it's said (the dashboard keeps it).
+        """
         def run():
             line = None
             if prepared is not None:
@@ -159,7 +163,13 @@ class Roaster:
                     line = prepared.result(timeout=wait)
                 except Exception as error:  # still being written, or the API failed
                     print(f"  roast not ready ({error.__class__.__name__}), using a canned one")
-            self._lines.put(line or self._canned(random.choice(FALLBACK_ROASTS)))
+            line = line or self._canned(random.choice(FALLBACK_ROASTS))
+            if on_spoken:
+                try:
+                    on_spoken(*line)
+                except Exception as error:
+                    print(f"  couldn't keep the roast: {error}")
+            self._lines.put(line)
         threading.Thread(target=run, daemon=True).start()
 
     def say_warning(self):
@@ -187,8 +197,8 @@ class Roaster:
     def _speaker(self):
         while True:
             text, mp3 = self._lines.get()
-            print(f"  PLUSHIE SAYS: {text}")
-            if mp3:
+            print(f"  PLUSHIE SAYS: {text}" + ("  (muted)" if self.muted else ""))
+            if mp3 and not self.muted:
                 try:
                     self.plushie.say(mp3)
                 except Exception as error:
