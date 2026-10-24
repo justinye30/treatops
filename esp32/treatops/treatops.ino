@@ -17,6 +17,7 @@
     GET /cmd?c=<command>                EYES CALM|SUSPICIOUS|PLEASED|ANGRY (or GREEN|YELLOW|RED)
                                         LOOK x y       look that way, -1..1 each (the hand), for a while
                                         COUNT n        flash "VICTIMS: n"
+                                        VOLUME v       0-4: 1 is the DAC's full scale, more boosts and clips
                                         LID OPEN | LID CLOSE
     GET /ping                           answers "treatops"
   The network and the voice run on core 0, the face on core 1, so drawing never makes the voice stutter.
@@ -29,8 +30,10 @@
 */
 #include <Arduino.h>
 #include <ESPmDNS.h>
-#include <TFT_eSPI.h>
+// WebServer.h before TFT_eSPI.h: TFT_eSPI's smooth-font code includes FS.h with FS_NO_GLOBALS, which
+// hides the bare FS name that WebServer.h (ESP32 core 3.x) needs.
 #include <WebServer.h>
+#include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <esp_system.h>
 #include <math.h>
@@ -45,7 +48,9 @@
 // ---------- Hardware ----------
 
 constexpr int AMP_ENABLE = 4;          // Freenove: active LOW
-constexpr float VOLUME = 0.25f;        // the voice test's starting volume
+constexpr float MAX_VOLUME = 4.0f;
+constexpr float VOLUME = MAX_VOLUME;   // 1 = the DAC's full scale, too quiet to hear on this speaker; more boosts
+                                       // and clips (VOLUME command)
 constexpr int STREAM_BUFFER = 4 * 1024;  // small enough to fill quickly, so a line starts at once
 constexpr const char* HOSTNAME = "treatops";
 
@@ -97,17 +102,32 @@ volatile uint32_t lookUntil = 0;
 volatile int victims = 0;
 volatile uint32_t counterUntil = 0;
 volatile float voiceLevel = 0.0f;            // 0-1, the voice's loudness right now
+volatile float volume = VOLUME;
 
 // ---------- Voice (core 0) ----------
 
-// The DAC output, measuring how loud the voice is as it goes through.
+// The DAC output, measuring how loud the voice is as it goes through. It always drives both DAC pins:
+// for a mono clip (ElevenLabs' MP3s, the dashboard's mic) the library would drive only GPIO25 and hold
+// GPIO26 low, and the speaker stayed silent. So mono is played as stereo, the same sound on both.
 class MeteredDAC : public AudioOutputInternalDAC {
  public:
+  bool SetChannels(int channels) override {
+    mono = channels == 1;
+    return AudioOutputInternalDAC::SetChannels(2);
+  }
   bool ConsumeSample(int16_t sample[2]) override {
+    if (mono) sample[1] = sample[0];  // the WAV decoder leaves the right channel at 0 for mono
+    // The library's SetGain() does nothing for the internal DAC, so the volume is applied here.
+    for (int i = 0; i < 2; i++) {
+      sample[i] = static_cast<int16_t>(constrain(static_cast<int32_t>(sample[i] * volume), -32768, 32767));
+    }
     const float s = fabsf(static_cast<float>(sample[0])) / 32768.0f;
     voiceLevel = s > voiceLevel ? s : voiceLevel * 0.9995f;  // a peak that falls away over ~0.1 s
     return AudioOutputInternalDAC::ConsumeSample(sample);
   }
+
+ private:
+  bool mono = false;
 };
 
 WebServer server(80);
@@ -173,6 +193,8 @@ void handleCommand(const String& command) {
   } else if (command.startsWith("COUNT ")) {
     victims = command.substring(6).toInt();
     counterUntil = millis() + 3500;
+  } else if (command.startsWith("VOLUME ")) {
+    volume = constrain(command.substring(7).toFloat(), 0.0f, MAX_VOLUME);
   } else if (command == "LID CLOSE") {
     moveLid(LID_CLOSED_DEGREES);
   } else if (command == "LID OPEN") {
@@ -218,7 +240,7 @@ constexpr int EYE_TOP = 22;
 constexpr int LEFT_EYE_X = 95 - EYE_W / 2;   // eye centres at x 95 and 225
 constexpr int RIGHT_EYE_X = 225 - EYE_W / 2;
 constexpr int CX = EYE_W / 2, CY = EYE_H / 2;
-constexpr int RX = 50, RY = 56;               // the eye's half-width and half-height
+constexpr int EYE_RX = 50, EYE_RY = 56;               // the eye's half-width and half-height
 constexpr int SOCKET_GROW = 10;               // the dark socket round it
 constexpr int IRIS = 23;
 constexpr float RIGHT_EYE_SCALE = 0.86f;      // uneven: one eye smaller...
@@ -267,8 +289,8 @@ void drawEye(bool left, float blink) {
   int dy = shake > 0.2f ? random(-100, 101) * shake / 100 : 0;
   if (now_.veins > 0.8f && random(100) < 4) dy += left ? -3 : 3;
   const int cx = CX + dx, cy = CY + dy;
-  const int rx = static_cast<int>(RX * scale);
-  const int ry = static_cast<int>(RY * scale * (1.0f + 0.08f * talk));
+  const int rx = static_cast<int>(EYE_RX * scale);
+  const int ry = static_cast<int>(EYE_RY * scale * (1.0f + 0.08f * talk));
   const int sx = rx + SOCKET_GROW, sy = ry + SOCKET_GROW;
   const int irisR = static_cast<int>(IRIS * scale);
 
@@ -391,7 +413,6 @@ void setup() {
   pinMode(AMP_ENABLE, OUTPUT);
   digitalWrite(AMP_ENABLE, LOW);
   audioOut = new MeteredDAC();  // the real GPIO25/26 DAC, not external I2S
-  audioOut->SetGain(VOLUME);
 
   if (LID_SERVO_PIN >= 0) {
     ledcAttach(LID_SERVO_PIN, 50, 14);
@@ -405,7 +426,16 @@ void setup() {
   WiFi.setSleep(false);  // power saving makes streaming stutter
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) delay(250);
+  Serial.println(String("Connecting to ") + WIFI_SSID);
+  for (int tries = 0; WiFi.status() != WL_CONNECTED; tries++) {
+    delay(250);
+    if (tries % 12 == 11) {  // every 3 s, say why it isn't on yet
+      const wl_status_t status = WiFi.status();
+      Serial.printf("  still connecting (status %d)%s\n", status,
+                    status == WL_NO_SSID_AVAIL ? ": network not found (exact name? 2.4 GHz? iPhone: Maximize Compatibility)"
+                    : status == WL_CONNECT_FAILED ? ": wrong password?" : "");
+    }
+  }
   const String ip = WiFi.localIP().toString();
   Serial.println("IP: " + ip + "  (put it in laptop/.env as PLUSHIE_HOST)");
   if (MDNS.begin(HOSTNAME)) MDNS.addService("http", "tcp", 80);
