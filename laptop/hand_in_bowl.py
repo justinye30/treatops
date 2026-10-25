@@ -274,11 +274,14 @@ class Show:
             if not self.watching and self.reopen_at is None:
                 self.watching = True
                 self.plushie.eyes("SUSPICIOUS")  # I see you
-        # The lid stays shut on them for the whole roast, and opens once it's been said.
+        # The lid stays shut on them for the whole roast, and opens once it's been said. That catch closes the
+        # visit: the next reach into the box is a fresh one, with its own costume photo, roast and catch.
         if self.reopen_at is not None and (self.roast_done.is_set() or now >= self.reopen_at):
             self.reopen_at = self.roast_done = None
             self.plushie.lid(closed=False)
             self.plushie.eyes("CALM")
+            self.leave()
+            self.welcomed = True  # still standing there: no second welcome
         gone = now - self.last_hand > VISITOR_GONE_SECONDS
         if hand_seen and self.welcomed:
             self.last_hand = now  # still around (somewhere in view): don't welcome them again
