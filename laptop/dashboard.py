@@ -40,12 +40,22 @@ EVENTS = 40
 MAX_RECORDING_BYTES = 2_000_000  # about a minute of the mic at 16 kHz
 
 # What the buttons can ask for; hand_in_bowl.py carries them out on its own thread.
-ACTIONS = {"scare", "roast", "end_visitor", "lid", "eyes", "mute", "clear_board"}
+ACTIONS = {"scare", "roast", "end_visitor", "lid", "eyes", "mute", "clear_board", "set_box", "find_box", "use_markers"}
 MOODS = {"CALM", "SUSPICIOUS", "PLEASED", "ANGRY"}
 TYPES = {".jpg": "image/jpeg", ".mp3": "audio/mpeg", ".json": "application/json", ".html": "text/html; charset=utf-8"}
 
 
+def valid_box(value):
+    """A box drawn on the page: [x1, y1, x2, y2] as 0-1 fractions of the camera picture, not a sliver."""
+    if not isinstance(value, list) or len(value) != 4 or not all(isinstance(v, (int, float)) for v in value):
+        return False
+    x1, y1, x2, y2 = value
+    return 0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1 and x2 - x1 >= 0.03 and y2 - y1 >= 0.03
+
+
 def _jpeg(frame, width, quality):
+    if frame is None or frame.size == 0:
+        return None
     if frame.shape[1] > width:
         frame = cv2.resize(frame, (width, int(frame.shape[0] * width / frame.shape[1])), interpolation=cv2.INTER_AREA)
     ok, data = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
@@ -160,7 +170,7 @@ class Dashboard:
         with self._lock:
             self.board = {}
             self._save_board()
-        for folder in ("photos", "replays"):
+        for folder in ("photos", "replays", "grabs"):  # grabs: photos an earlier version kept
             shutil.rmtree(DATA / folder, ignore_errors=True)
         self.log("Leaderboard cleared")
 
@@ -191,8 +201,8 @@ class Dashboard:
     def state(self):
         with self._lock:
             entries = list(self.board.values())
-        # Big backs only: two or more, or caught (one piece is a good choice, not a big back).
-        leaders = sorted((e for e in entries if e["taken"] >= 2 or e["caught"]), key=lambda e: (-e["taken"], -e["at"]))
+        # Big backs only: two pieces or more (one piece is a good choice, not a big back).
+        leaders = sorted((e for e in entries if e["taken"] >= 2), key=lambda e: (-e["taken"], -e["at"]))
         replays = sorted((e for e in entries if e["replay"]), key=lambda e: -e["at"])
         return {
             "status": self.status,
@@ -237,7 +247,8 @@ class Dashboard:
                     self.send_error(400)
                     return
                 action, value = body.get("action"), body.get("value")
-                if action not in ACTIONS or (action == "eyes" and value not in MOODS):
+                if (action not in ACTIONS or (action == "eyes" and value not in MOODS)
+                        or (action == "set_box" and not valid_box(value))):
                     self.send_error(400)
                     return
                 dashboard._controls.put((action, value))

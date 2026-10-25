@@ -33,48 +33,58 @@ load_dotenv(HERE / ".env")
 
 MODEL = "gpt-6-luna"
 ROAST_TIMEOUT_SECONDS = 8.0
-VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID") or "JBFqnCBsd6RMkjVDRZzb"  # any ElevenLabs voice works
+VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID") or "8ZS1KKN5BCOVHpGCtbLx"  # "Gorak - Powerful, Deep", an orc
+VOICE_SPEED = float(os.environ.get("ELEVENLABS_SPEED") or 1.2)  # 0.7-1.2; 1.2 is their fastest talking
 VOICE_MODEL = "eleven_flash_v2_5"  # their fastest
 VOICE_FORMAT = "mp3_22050_32"      # small MP3s the ESP32 streams and decodes easily
 CACHE = HERE / "voice_cache"
 
 ROAST_INSTRUCTIONS = (
-    "You're a plushie heckling trick-or-treaters from next to a Halloween candy box. This one just grabbed "
-    "way too much candy. Heckle them about their costume in the photo, like the loudest kid in the back of "
-    "the class. Write ONE line of at most 15 words that sounds shouted, not written. Use Gen Alpha brainrot "
-    "slang the way kids actually talk (nah, bro, not you, the audacity, caught in 4K, fanum tax, aura, NPC, "
-    "it's giving, ain't no way), one or two bits, not a pile. Name the costume and dunk on it: cheap, "
-    "dollar store, Temu, low effort, falling apart, last-minute, wrong size. Tie it to grabbing extra "
-    "candy. No poetry, rhymes, metaphors, puns, emojis, hashtags or quote marks. Keep it PG for kids: no "
-    "swearing, and nothing about their body, face, skin, hair, weight, age, gender, race or religion; only "
-    "the costume and the greed. If you can't make out a costume, roast the greed.\n"
+    "You're a grumpy plushie guarding a Halloween candy box, like an unimpressed security guard who takes "
+    "the job far too seriously. This trick-or-treater just grabbed way too much candy. Tease them about "
+    "their costume in the photo: dry, deadpan, a little dramatic, funny rather than mean. Write ONE line of "
+    "at most 15 words, to be said out loud: a quick setup and a punchline, not a description. Never "
+    "narrate what you see (no 'I see'). Name the costume and poke fun at it (homemade, cheap, falling "
+    "apart, last-minute, wrong size), and tie it to taking too much candy, without saying how many pieces. Plain everyday English: no "
+    "internet or Gen Alpha slang (no bro, nah, NPC, aura, rizz, caught in 4K, it's giving, no cap, fanum "
+    "tax, the audacity). No rhymes, emojis, hashtags or quote marks. Keep it PG for kids: no swearing, and "
+    "nothing about their body, face, skin, hair, weight, age, gender, race or religion; only the costume "
+    "and the greed. The camera looks down at the cardboard box the candy sits in: that box, the candy and "
+    "any gray patch painted over them are never the costume, so never mention a box. Look only at the "
+    "person: their sleeves, hands, gloves, clothes, mask or props. No costume at all (everyday clothes) is a joke in itself: dressed as a regular person, "
+    "the costume is commitment issues, and so on.\n"
     "Examples of the tone:\n"
-    "Not you in that dollar store mask trying to grab extra candy.\n"
-    "Bro's Spider-Man suit is straight off Temu and he still took three. Nah.\n"
-    "Caught in 4K, plastic witch hat, triple candy. Negative aura."
+    "A cardboard robot with a candy problem. Even your costume looks disappointed.\n"
+    "That witch hat is held together with tape and hope. Put two back.\n"
+    "Spider-Man takes one piece. You are not Spider-Man."
 )
+
+# Someone's coming, before they've reached the box.
+WELCOMES = [
+    "Take some candy, but not too much.",
+    "One piece is fine. I'm watching you.",
+    "Go ahead, grab one. Just one.",
+]
 
 # Two pieces: a warning shot.
 WARNINGS = [
-    "Nah bro, that's two. I'm watching you.",
-    "Two? Easy there, fanum tax collector.",
-    "Bro thinks I didn't see that. Put it back.",
+    "That's two. I'm counting, you know.",
+    "Two pieces? Bold. Very bold.",
+    "You think I didn't see that? Put it back.",
 ]
 
 # Three or more when the roast isn't ready or the API is down.
 FALLBACK_ROASTS = [
-    "Not you trying to fanum tax my whole box.",
-    "Caught in 4K taking three. Negative aura, bro.",
-    "Ain't no way you just did that in that costume.",
-    "Bro's costume is from Temu and so are his manners.",
-    "The audacity. Put it back, NPC.",
-    "Nah, that's not trick-or-treat, that's a robbery.",
-    "Low effort costume, high effort greed. Crazy.",
-    "Bro really said one for me and three for me.",
-    "It's giving last-minute costume and first-place greed.",
-    "Somebody call your mom, bro's stealing candy.",
+    "That's not trick-or-treating. That's a heist.",
+    "I've seen raccoons with more self-control.",
+    "Put it back. Slowly. Nobody has to get hurt.",
+    "Leave some for the rest of the neighborhood, please.",
+    "Your costume says hero. Your hands say candy thief.",
+    "Right in front of me? Impressive, honestly.",
+    "I'm a plushie, not a pushover. Put some back.",
+    "Hold it right there, candy bandit.",
+    "The sign said one. I watched you read the sign.",
 ]
-
 _openai = None
 
 
@@ -112,7 +122,7 @@ def synthesize(text):
     """The line spoken by ElevenLabs, as MP3 bytes. Raises if the call fails."""
     request = urllib.request.Request(
         f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format={VOICE_FORMAT}",
-        data=json.dumps({"text": text, "model_id": VOICE_MODEL}).encode(),
+        data=json.dumps({"text": text, "model_id": VOICE_MODEL, "voice_settings": {"speed": VOICE_SPEED}}).encode(),
         headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"], "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=10) as response:
@@ -134,7 +144,7 @@ class Roaster:
         if self.can_speak:
             # Synthesise the canned lines now, so a fallback never waits on the network. One job per line,
             # so quitting can cancel the ones not started.
-            for line in WARNINGS + FALLBACK_ROASTS:
+            for line in WELCOMES + WARNINGS + FALLBACK_ROASTS:
                 self._work.submit(self._canned, line)
 
     def close(self):
@@ -157,22 +167,33 @@ class Roaster:
         """
         Speaks the prepared roast, waiting up to `wait` seconds for it; a canned one if it isn't ready.
         on_spoken(text, mp3) hears what's said just before it's said (the dashboard keeps it).
+        Returns an Event that's set once the roast has finished playing (the lid opens then).
         """
+        done = threading.Event()
+
         def run():
             line = None
-            if prepared is not None:
-                try:
-                    line = prepared.result(timeout=wait)
-                except Exception as error:  # still being written, or the API failed
-                    print(f"  roast not ready ({error.__class__.__name__}), using a canned one")
-            line = line or self._canned(random.choice(FALLBACK_ROASTS))
-            if on_spoken:
-                try:
-                    on_spoken(*line)
-                except Exception as error:
-                    print(f"  couldn't keep the roast: {error}")
-            self._lines.put(line)
+            try:
+                if prepared is not None:
+                    try:
+                        line = prepared.result(timeout=wait)
+                    except Exception as error:  # still being written, or the API failed
+                        print(f"  roast not ready ({error.__class__.__name__}), using a canned one")
+                line = line or self._canned(random.choice(FALLBACK_ROASTS))
+                if on_spoken:
+                    try:
+                        on_spoken(*line)
+                    except Exception as error:
+                        print(f"  couldn't keep the roast: {error}")
+                self._lines.put((*line, "mp3", done))
+            except Exception as error:
+                print(f"  couldn't roast: {error}")
+                done.set()
         threading.Thread(target=run, daemon=True).start()
+        return done
+
+    def say_welcome(self):
+        threading.Thread(target=lambda: self._lines.put(self._canned(random.choice(WELCOMES))), daemon=True).start()
 
     def say_warning(self):
         # Off the caller's thread: an uncached line means a call to ElevenLabs, and that mustn't stall the video.
@@ -186,7 +207,7 @@ class Roaster:
         """A canned line with its audio from voice_cache/, synthesised the first time it's needed."""
         if not self.can_speak:
             return text, None
-        key = hashlib.sha1(f"{VOICE_ID}|{VOICE_MODEL}|{VOICE_FORMAT}|{text}".encode()).hexdigest()[:16]
+        key = hashlib.sha1(f"{VOICE_ID}|{VOICE_SPEED}|{VOICE_MODEL}|{VOICE_FORMAT}|{text}".encode()).hexdigest()[:16]
         path = CACHE / f"{key}.mp3"
         if not path.exists():
             try:
@@ -202,9 +223,11 @@ class Roaster:
 
     def _speaker(self):
         while True:
-            # (text, mp3) for the lines; (text, wav, "wav") for the operator's mic, which plays even when muted.
-            text, audio, *kind = self._lines.get()
-            kind = kind[0] if kind else "mp3"
+            # (text, mp3) for the lines; (text, wav, "wav") for the operator's mic, which plays even when muted;
+            # a roast also carries an Event, set once it's been said.
+            text, audio, *rest = self._lines.get()
+            kind = rest[0] if rest else "mp3"
+            done = rest[1] if len(rest) > 1 else None
             muted = self.muted and kind == "mp3"
             print(f"  PLUSHIE SAYS: {text}" + ("  (muted)" if muted else ""))
             self.speaking = text
@@ -217,6 +240,8 @@ class Roaster:
                 print(f"  couldn't play the line: {error}")
             finally:
                 self.speaking = None
+                if done:
+                    done.set()
 
 
 if __name__ == "__main__":

@@ -29,6 +29,8 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict
 
+from lid import Lid
+
 VOICE_PORT = int(os.environ.get("VOICE_PORT") or 8765)  # where the ESP32 fetches clips from this laptop
 MP3_BYTES_PER_SECOND = 32000 / 8                        # ElevenLabs' mp3_22050_32: 32 kbit/s
 KEEP_CLIPS = 8
@@ -42,6 +44,8 @@ class Plushie:
         self._clips = OrderedDict()  # name -> audio bytes (MP3 lines, WAV from the dashboard's mic), served to the ESP32
         self._names = itertools.count()
         self._commands = queue.Queue()
+        self._look = None  # the latest LOOK not sent yet: only the newest matters, so they never pile up
+        self._lid = Lid()  # the box's lid: an Arduino on this laptop's USB (lid.py)
         # Commands go out on their own thread: a slow or missing ESP32 must never stall the video.
         threading.Thread(target=self._send_commands, daemon=True).start()
         if self.host:
@@ -76,6 +80,7 @@ class Plushie:
 
     def lid(self, closed):
         self.lid_closed = closed
+        self._lid.set(closed)
         self.command("LID CLOSE" if closed else "LID OPEN")
 
     def eyes(self, mood):
@@ -84,7 +89,8 @@ class Plushie:
 
     def look(self, x, y):
         """Where to look, -1..1 each (right and down positive, as the face is seen). Not printed: it's often."""
-        self._commands.put(f"LOOK {x:.2f} {y:.2f}")
+        self._look = f"LOOK {x:.2f} {y:.2f}"  # replaces one that hasn't gone out yet
+        self._commands.put(None)               # wakes the sender
 
     def count(self, victims):
         self.command(f"COUNT {victims}")
@@ -92,6 +98,15 @@ class Plushie:
     def _send_commands(self):
         while True:
             text = self._commands.get()
+            if text is None:  # a LOOK: send the newest once, quickly, and never retry; another is coming
+                text, self._look = self._look, None
+                if text is None or not self.host:
+                    continue
+                try:
+                    self._get("/cmd", timeout=0.5, c=text)
+                except Exception:
+                    pass
+                continue
             if not self.host:
                 continue
             for attempt in range(3):  # a Wi-Fi hiccup mustn't leave the lid shut

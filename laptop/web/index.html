@@ -90,6 +90,14 @@
   .subtitle { position: absolute; left: 50%; bottom: 48px; transform: translateX(-50%); width: min(86%, 760px); text-align: center;
     background: rgba(8, 9, 10, 0.82); color: #fff; font: 500 clamp(15px, 1.7vw, 21px)/1.35 var(--body); padding: 8px 14px; text-wrap: balance; }
 
+  /* Drawing the box over the live camera */
+  .feed.drawing { cursor: crosshair; touch-action: none; }
+  .feed.drawing::after { box-shadow: inset 0 0 0 3px var(--corn-yellow); }
+  .draw-rect { position: absolute; border: 2px dashed var(--corn-yellow); background: rgba(242, 192, 55, 0.12); pointer-events: none; }
+  .feed-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; font-size: 13px; color: var(--chalk-dim); }
+  .feed-tools button { min-height: 36px; }
+  .feed-tools button.live { border-color: var(--corn-yellow); color: var(--corn-yellow); }
+
   /* The visit meter: where the trick-or-treater at the box is */
   .meter { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: center; margin-top: 16px; }
   .visit { display: flex; align-items: baseline; gap: 8px; min-width: 120px; }
@@ -224,6 +232,13 @@
         <div class="subtitle" id="subtitle" hidden></div>
         <div class="osd bl"><span id="osd-box">BOX -</span><span id="osd-grab">LAST GRAB -</span></div>
         <div class="linger" id="linger"></div>
+        <div class="draw-rect" id="draw-rect" hidden></div>
+      </div>
+      <div class="feed-tools">
+        <button data-action="find_box">Find box</button>
+        <button id="draw-box" aria-pressed="false">Draw box<kbd>B</kbd></button>
+        <button data-action="use_markers">Use markers</button>
+        <span id="draw-note">Find box spots the candy box by itself; Draw box is for tidying it up by hand.</span>
       </div>
       <div class="meter">
         <div class="visit"><b class="num" id="visit">–</b><span id="visit-label">Nobody at the box</span></div>
@@ -231,7 +246,7 @@
           <div class="tier" data-tier="0"><b>Looking</b><span>0 pcs</span></div>
           <div class="tier" data-tier="1"><b>Good choice</b><span>1 pc</span></div>
           <div class="tier warned" data-tier="2"><b>Warned</b><span>2 pcs</span></div>
-          <div class="tier caught" data-tier="3"><b>Caught</b><span>3+, or a hand in 3s</span></div>
+          <div class="tier caught" data-tier="3"><b>Caught</b><span id="tier-caught">3+ pcs</span></div>
         </div>
       </div>
       <p class="sr" role="status" id="announce"></p>
@@ -332,12 +347,14 @@ $('reset').addEventListener('click', () => {
   if (confirm('Reset Top Big Backs? This deletes their photos and the replays of every catch.')) control('clear_board');
 });
 
-// Keys for the operator: Space scare, R roast, X release, L lid, M mute, T (held) talk.
+// Keys for the operator: Space scare, R roast, X release, L lid, M mute, T (held) talk, B draw the box.
 document.addEventListener('keydown', (event) => {
   if ($('player').open || event.ctrlKey || event.metaKey || event.altKey || event.target.matches('input')) return;
   if ((event.key === ' ' || event.key === 'Enter') && event.target.closest('button')) return;  // the button does it
   const key = event.key.toLowerCase();
-  if (key === 't') { event.preventDefault(); if (!event.repeat) micStart(); }
+  if (key === 'escape' && drawing) setDrawing(false);
+  else if (key === 'b') setDrawing(!drawing);
+  else if (key === 't') { event.preventDefault(); if (!event.repeat) micStart(); }
   else if (key === ' ') { event.preventDefault(); control('scare'); }
   else if (key === 'r') control('roast');
   else if (key === 'x') control('end_visitor');
@@ -346,6 +363,58 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('keyup', (event) => { if (event.key.toLowerCase() === 't') micStop(); });
+
+// ---------- Drawing the box: drag over the live camera ----------
+
+let drawing = false, dragFrom = null;
+const DRAW_NOTE = $('draw-note').textContent;
+function setDrawing(on) {
+  drawing = on;
+  dragFrom = null;
+  $('feed').classList.toggle('drawing', on);
+  $('draw-box').classList.toggle('live', on);
+  $('draw-box').setAttribute('aria-pressed', String(on));
+  $('draw-rect').hidden = true;
+  $('draw-note').textContent = on ? 'Drag over the candy box on the camera. Esc cancels.' : DRAW_NOTE;
+}
+$('draw-box').addEventListener('click', () => setDrawing(!drawing));
+
+// Where a point on the feed falls in the camera picture (0-1), allowing for the picture being cropped to fit.
+function toPicture(x, y) {
+  const box = $('feed').getBoundingClientRect(), img = $('live');
+  const w = img.naturalWidth || 16, h = img.naturalHeight || 9;
+  const scale = Math.max(box.width / w, box.height / h);
+  const clamp = (v) => Math.min(1, Math.max(0, v));
+  return [clamp((x - (box.width - w * scale) / 2) / (w * scale)), clamp((y - (box.height - h * scale) / 2) / (h * scale))];
+}
+const feedPoint = (event) => { const box = $('feed').getBoundingClientRect(); return [event.clientX - box.left, event.clientY - box.top]; };
+function showDrag(to) {
+  const [x1, y1] = dragFrom, [x2, y2] = to;
+  Object.assign($('draw-rect').style, { left: `${Math.min(x1, x2)}px`, top: `${Math.min(y1, y2)}px`,
+    width: `${Math.abs(x2 - x1)}px`, height: `${Math.abs(y2 - y1)}px` });
+  $('draw-rect').hidden = false;
+}
+$('feed').addEventListener('pointerdown', (event) => {
+  if (!drawing) return;
+  event.preventDefault();
+  $('feed').setPointerCapture(event.pointerId);
+  dragFrom = feedPoint(event);
+  showDrag(dragFrom);
+});
+$('feed').addEventListener('pointermove', (event) => { if (drawing && dragFrom) showDrag(feedPoint(event)); });
+$('feed').addEventListener('pointerup', (event) => {
+  if (!drawing || !dragFrom) return;
+  const [ax, ay] = toPicture(...dragFrom), [bx, by] = toPicture(...feedPoint(event));
+  const box = [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)].map((v) => Math.round(v * 1000) / 1000);
+  if (box[2] - box[0] < 0.03 || box[3] - box[1] < 0.03) {  // a click, not a drag
+    dragFrom = null;
+    $('draw-rect').hidden = true;
+    $('draw-note').textContent = 'Too small: drag from one corner of the candy box to the other.';
+    return;
+  }
+  control('set_box', box);
+  setDrawing(false);
+});
 
 // ---------- Push to talk: the browser's mic, recorded while held, played through the plushie ----------
 // Recorded as 16 kHz 16-bit WAV (no libraries), sent to POST /api/say. "Deep voice" labels it as a lower
@@ -479,16 +548,18 @@ function render(state) {
   lamp('lamp-plush', s.plushie ? 'on' : '', s.plushie ? s.plushie : 'offline · audio on laptop');
 
   // The camera reacts: a hand in the box (and how long, against the linger limit), then the catch.
-  const caughtNow = !!(s.lid_closed || (s.scared && s.speaking));
+  // A real catch only: the lid shut from the switch here isn't one.
+  const caughtNow = !!(s.catching || (s.scared && s.speaking));
   $('feed').classList.toggle('hand', !!s.hand_in && !caughtNow);
   $('feed').classList.toggle('caught', caughtNow);
   $('hand-chip').hidden = !s.hand_in || caughtNow;
   $('hand-chip').textContent = `Hand in box ${(s.hand_in_for ?? 0).toFixed(1)}s`;
-  $('linger').style.width = s.hand_in && !caughtNow ? `${Math.min(100, (100 * (s.hand_in_for ?? 0)) / (s.linger || 3))}%` : '0';
+  $('linger').style.width = s.hand_in && s.linger && !caughtNow ? `${Math.min(100, (100 * (s.hand_in_for ?? 0)) / s.linger)}%` : '0';
+  $('tier-caught').textContent = s.linger ? `3+, or a hand in ${Math.round(s.linger)}s` : '3+ pcs';
   $('stamp').hidden = !caughtNow;
   $('subtitle').hidden = !s.speaking;
   $('subtitle').textContent = s.speaking || '';
-  $('osd-box').textContent = !s.box ? 'BOX NOT FOUND' : s.box.startsWith('markers') ? 'BOX LOCKED' : 'BOX DRAWN';
+  $('osd-box').textContent = s.finding_box ? 'FINDING BOX…' : !s.box ? 'BOX NOT FOUND' : s.box.startsWith('markers') ? 'BOX LOCKED' : 'BOX DRAWN';
   const grab = s.last_grab ?? '-';
   $('osd-grab').textContent = `LAST GRAB ${/^\d|3\+/.test(grab) ? `${grab} PCS` : grab.toUpperCase()}`;
 
@@ -648,7 +719,7 @@ const demo = {
     return {
       status: { ...this.settings, victims: 3, fps: 29, box: 'markers 4/4', counting: true, plushie: null, linger: 3,
         visitor: t < 9 ? 2 : null, warned: t < 9, scared: caught, hand_in: handIn, hand_in_for: handIn ? t : 0,
-        lid_closed: caught || this.settings.lid_closed, eyes: caught ? 'ANGRY' : this.settings.eyes, last_grab: '2',
+        catching: caught, lid_closed: caught || this.settings.lid_closed, eyes: caught ? 'ANGRY' : this.settings.eyes, last_grab: '2',
         speaking: caught && t > 3.6 ? 'Nah, that dollar store raincoat is giving low effort, and you still went back in?' : null },
       candies: 19, visitors: 11, board,
       events: [...this.log, { at: now - 25, text: 'Took 2 · 2 this visit' }, { at: now - 48, text: "Someone's at the box" },
